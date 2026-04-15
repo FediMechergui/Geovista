@@ -20,26 +20,26 @@ import {
   ResponsiveContainer,
 } from 'recharts';
 import { useMapStore } from '@/store/mapStore';
-import {
-  loadTerrainTile,
-  tileToElevationGrid,
-  latLonToTile,
-} from '@/lib/terrain/demLoader';
+import { loadMultiTileDEM } from "@/lib/terrain/demLoader";
 import {
   generateTerrainMesh,
   generateGeologyLayers,
   generateBuildingMeshes,
-} from '@/lib/terrain/meshGenerator';
-import { fetchBuildings } from '@/lib/buildings/osmFetcher';
+} from "@/lib/terrain/meshGenerator";
+import { fetchBuildingsOverture } from "@/lib/buildings/overtureFetcher";
 import {
   fetchGeologicalColumn,
   columnToLayers,
-} from '@/lib/geology/macrostratApi';
-import { geodesicDistance } from '@/lib/analysis/coordTransform';
-import type { ElevationGrid, BBox } from '@/types/geo';
-import type { BuildingData } from '@/types/buildings';
-import type { GeologyLayerDef } from '@/types/geology';
-import { Ruler, X, ChevronUp, Loader2 } from 'lucide-react';
+} from "@/lib/geology/macrostratApi";
+import { geodesicDistance } from "@/lib/analysis/coordTransform";
+import {
+  fetchLandUse,
+  rasterizeLandUse,
+} from "@/lib/terrain/landUseRasterizer";
+import type { ElevationGrid, BBox } from "@/types/geo";
+import type { BuildingData } from "@/types/buildings";
+import type { GeologyLayerDef } from "@/types/geology";
+import { Ruler, X, ChevronUp, Loader2 } from "lucide-react";
 
 /* ================================================================== */
 /*  Constants                                                          */
@@ -56,23 +56,6 @@ const PROFILE_SAMPLES = 80;
 function bboxToZoom(bbox: BBox): number {
   const span = Math.max(bbox.east - bbox.west, bbox.north - bbox.south);
   return Math.min(14, Math.max(2, Math.round(Math.log2(360 / span))));
-}
-
-/** Geographic extent of a Web-Mercator XYZ tile. */
-function tileToBBox(x: number, y: number, z: number): BBox {
-  const n = 2 ** z;
-  const west = (x / n) * 360 - 180;
-  const east = ((x + 1) / n) * 360 - 180;
-  return {
-    west,
-    east,
-    north: tileToLat(y, z),
-    south: tileToLat(y + 1, z),
-  };
-}
-function tileToLat(y: number, z: number): number {
-  const n = Math.PI - (2 * Math.PI * y) / 2 ** z;
-  return (180 / Math.PI) * Math.atan(Math.sinh(n));
 }
 
 /** Bilinear interpolation of elevation at a lon/lat inside the grid's bbox. */
@@ -346,13 +329,22 @@ function ElevationProfile({
       <div className="mb-2 flex items-center justify-between">
         <div className="flex items-center gap-4 text-xs font-medium text-zinc-500 dark:text-zinc-400">
           <span>
-            Min: <b className="text-zinc-800 dark:text-zinc-200">{minElev.toFixed(0)} m</b>
+            Min:{" "}
+            <b className="text-zinc-800 dark:text-zinc-200">
+              {minElev.toFixed(0)} m
+            </b>
           </span>
           <span>
-            Max: <b className="text-zinc-800 dark:text-zinc-200">{maxElev.toFixed(0)} m</b>
+            Max:{" "}
+            <b className="text-zinc-800 dark:text-zinc-200">
+              {maxElev.toFixed(0)} m
+            </b>
           </span>
           <span>
-            Avg: <b className="text-zinc-800 dark:text-zinc-200">{avgElev.toFixed(0)} m</b>
+            Avg:{" "}
+            <b className="text-zinc-800 dark:text-zinc-200">
+              {avgElev.toFixed(0)} m
+            </b>
           </span>
         </div>
         <button
@@ -364,7 +356,10 @@ function ElevationProfile({
         </button>
       </div>
       <ResponsiveContainer width="100%" height={140}>
-        <AreaChart data={data} margin={{ top: 4, right: 4, bottom: 0, left: -10 }}>
+        <AreaChart
+          data={data}
+          margin={{ top: 4, right: 4, bottom: 0, left: -10 }}
+        >
           <defs>
             <linearGradient id="elGrad" x1="0" y1="0" x2="0" y2="1">
               <stop offset="5%" stopColor="#22c55e" stopOpacity={0.5} />
@@ -380,10 +375,13 @@ function ElevationProfile({
           <YAxis
             tick={{ fontSize: 10 }}
             tickFormatter={(v: number) => `${v.toFixed(0)} m`}
-            domain={[Math.floor(minElev / 10) * 10, Math.ceil(maxElev / 10) * 10]}
+            domain={[
+              Math.floor(minElev / 10) * 10,
+              Math.ceil(maxElev / 10) * 10,
+            ]}
           />
           <Tooltip
-            formatter={(v) => [`${Number(v).toFixed(1)} m`, 'Elevation']}
+            formatter={(v) => [`${Number(v).toFixed(1)} m`, "Elevation"]}
             labelFormatter={(v) => `Distance: ${fmtDist(Number(v))}`}
           />
           <Area
@@ -417,11 +415,15 @@ export default function TerrainViewer() {
   const [grid, setGrid] = useState<ElevationGrid | null>(null);
   const [buildings, setBuildings] = useState<BuildingData[]>([]);
   const [geologyLayers, setGeologyLayers] = useState<GeologyLayerDef[]>([]);
+  const [landUseCanvas, setLandUseCanvas] = useState<OffscreenCanvas | null>(
+    null,
+  );
 
   /* ---- Loading / error ---- */
   const [loadingTerrain, setLoadingTerrain] = useState(false);
   const [loadingBuildings, setLoadingBuildings] = useState(false);
   const [loadingGeology, setLoadingGeology] = useState(false);
+  const [loadingLandUse, setLoadingLandUse] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   /* ---- Measurement ---- */
@@ -449,7 +451,7 @@ export default function TerrainViewer() {
   /*  Data fetching                                                    */
   /* ================================================================ */
 
-  /** Fetch terrain DEM for the selected region. */
+  /** Fetch terrain DEM for the selected region (multi-tile). */
   useEffect(() => {
     if (!selectedRegion) return;
     let cancelled = false;
@@ -458,20 +460,21 @@ export default function TerrainViewer() {
       setLoadingTerrain(true);
       setError(null);
       try {
-        const centerLat = (selectedRegion.south + selectedRegion.north) / 2;
-        const centerLon = (selectedRegion.west + selectedRegion.east) / 2;
-        const z = bboxToZoom(selectedRegion);
-        const { x, y } = latLonToTile(centerLat, centerLon, z);
-        const tBBox = tileToBBox(x, y, z);
-        const imageData = await loadTerrainTile(z, x, y);
-        const elevGrid = tileToElevationGrid(imageData, tBBox);
+        // Pick a zoom level that gives good detail: base zoom + 2,
+        // capped at 12 (beyond that creates too many tile requests).
+        const baseZ = bboxToZoom(selectedRegion);
+        const z = Math.min(baseZ + 2, 12);
+
+        const elevGrid = await loadMultiTileDEM(selectedRegion, z, true);
         if (!cancelled) {
           setGrid(elevGrid);
-          setTileBBox(tBBox);
+          setTileBBox(elevGrid.bbox);
         }
       } catch (err) {
         if (!cancelled)
-          setError(err instanceof Error ? err.message : 'Failed to load terrain');
+          setError(
+            err instanceof Error ? err.message : "Failed to load terrain",
+          );
       } finally {
         if (!cancelled) setLoadingTerrain(false);
       }
@@ -482,7 +485,7 @@ export default function TerrainViewer() {
     };
   }, [selectedRegion]);
 
-  /** Fetch OSM buildings. */
+  /** Fetch buildings (Overture Maps → OSM fallback). */
   useEffect(() => {
     if (!selectedRegion || !layers.buildings) {
       setBuildings([]);
@@ -493,10 +496,10 @@ export default function TerrainViewer() {
     (async () => {
       setLoadingBuildings(true);
       try {
-        const data = await fetchBuildings(selectedRegion);
+        const data = await fetchBuildingsOverture(selectedRegion);
         if (!cancelled) setBuildings(data);
       } catch (err) {
-        console.warn('[TerrainViewer] building fetch failed:', err);
+        console.warn("[TerrainViewer] building fetch failed:", err);
         if (!cancelled) setBuildings([]);
       } finally {
         if (!cancelled) setLoadingBuildings(false);
@@ -526,7 +529,7 @@ export default function TerrainViewer() {
           setGeologyLayers(column ? columnToLayers(column, 5000) : []);
         }
       } catch (err) {
-        console.warn('[TerrainViewer] geology fetch failed:', err);
+        console.warn("[TerrainViewer] geology fetch failed:", err);
         if (!cancelled) setGeologyLayers([]);
       } finally {
         if (!cancelled) setLoadingGeology(false);
@@ -538,6 +541,35 @@ export default function TerrainViewer() {
     };
   }, [selectedRegion, layers.geology]);
 
+  /** Fetch OSM land-use / land-cover and rasterize to canvas texture. */
+  useEffect(() => {
+    if (!selectedRegion) {
+      setLandUseCanvas(null);
+      return;
+    }
+    let cancelled = false;
+
+    (async () => {
+      setLoadingLandUse(true);
+      try {
+        const osm = await fetchLandUse(selectedRegion);
+        if (!cancelled) {
+          const canvas = rasterizeLandUse(osm, selectedRegion, 1024);
+          setLandUseCanvas(canvas);
+        }
+      } catch (err) {
+        console.warn("[TerrainViewer] land-use fetch failed:", err);
+        if (!cancelled) setLandUseCanvas(null);
+      } finally {
+        if (!cancelled) setLoadingLandUse(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRegion]);
+
   /* ================================================================ */
   /*  Mesh generation (synchronous from fetched data)                  */
   /* ================================================================ */
@@ -547,6 +579,7 @@ export default function TerrainViewer() {
   const geologyGroupRef = useRef<THREE.Group | null>(null);
 
   // Terrain mesh: generate with exaggeration = 1 (parent group applies scale)
+  // When land-use canvas is available, drape it as a texture for realistic biome colors.
   const terrainMesh = useMemo(() => {
     if (!grid) return null;
     // Dispose previous
@@ -554,10 +587,15 @@ export default function TerrainViewer() {
       terrainMeshRef.current.geometry.dispose();
       (terrainMeshRef.current.material as THREE.Material).dispose();
     }
-    const mesh = generateTerrainMesh(grid, 1);
+    const mesh = generateTerrainMesh(
+      grid,
+      1,
+      undefined,
+      landUseCanvas ?? undefined,
+    );
     terrainMeshRef.current = mesh;
     return mesh;
-  }, [grid]);
+  }, [grid, landUseCanvas]);
 
   // Buildings
   const buildingGroup = useMemo(() => {
@@ -604,16 +642,13 @@ export default function TerrainViewer() {
   /*  Measurement logic                                                */
   /* ================================================================ */
 
-  const handleTerrainClick = useCallback(
-    (pt: MeasurePoint) => {
-      setMeasurePoints((prev) => {
-        if (prev.length < 2) return [...prev, pt];
-        // Reset — start new measurement
-        return [pt];
-      });
-    },
-    [],
-  );
+  const handleTerrainClick = useCallback((pt: MeasurePoint) => {
+    setMeasurePoints((prev) => {
+      if (prev.length < 2) return [...prev, pt];
+      // Reset — start new measurement
+      return [pt];
+    });
+  }, []);
 
   // Auto-show profile when two points exist
   useEffect(() => {
@@ -631,8 +666,7 @@ export default function TerrainViewer() {
   const profileData = useMemo<ProfilePoint[]>(() => {
     if (measurePoints.length < 2 || !grid) return [];
     const [a, b] = measurePoints;
-    const totalDist =
-      geodesicDistance(a.lat, a.lon, b.lat, b.lon);
+    const totalDist = geodesicDistance(a.lat, a.lon, b.lat, b.lon);
     const pts: ProfilePoint[] = [];
     for (let i = 0; i <= PROFILE_SAMPLES; i++) {
       const t = i / PROFILE_SAMPLES;
@@ -648,18 +682,19 @@ export default function TerrainViewer() {
   /*  Render                                                           */
   /* ================================================================ */
 
-  const isLoading = loadingTerrain || loadingBuildings || loadingGeology;
+  const isLoading =
+    loadingTerrain || loadingBuildings || loadingGeology || loadingLandUse;
   const loadingMsg = loadingTerrain
-    ? 'Loading terrain…'
+    ? "Loading terrain…"
     : loadingBuildings
-      ? 'Loading buildings…'
-      : 'Loading geology…';
+      ? "Loading buildings…"
+      : "Loading geology…";
 
   return (
     <div className="relative h-full w-full bg-zinc-950">
       {/* ---------- Three.js Canvas ---------- */}
       <Canvas
-        shadows
+        shadows={{ type: THREE.PCFShadowMap }}
         camera={{ fov: 55, near: 0.00001, far: 100 }}
         gl={{ antialias: true, toneMapping: THREE.ACESFilmicToneMapping }}
       >
@@ -702,8 +737,8 @@ export default function TerrainViewer() {
           }}
           className={`flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg shadow-lg backdrop-blur-md transition-colors ${
             measureMode
-              ? 'bg-yellow-500 text-white'
-              : 'bg-white/90 text-zinc-600 hover:bg-zinc-100 dark:bg-zinc-800/90 dark:text-zinc-300 dark:hover:bg-zinc-700'
+              ? "bg-yellow-500 text-white"
+              : "bg-white/90 text-zinc-600 hover:bg-zinc-100 dark:bg-zinc-800/90 dark:text-zinc-300 dark:hover:bg-zinc-700"
           }`}
           title="Measure distance"
         >
@@ -746,21 +781,40 @@ export default function TerrainViewer() {
         {/* Layer badges */}
         <div className="flex flex-wrap gap-1">
           {layers.terrain && <Badge label="Terrain" color="bg-green-600" />}
-          {layers.buildings && <Badge label="Buildings" color="bg-zinc-500" loading={loadingBuildings} />}
-          {layers.geology && <Badge label="Geology" color="bg-amber-600" loading={loadingGeology} />}
-          {layers.bathymetry && <Badge label="Bathymetry" color="bg-blue-600" />}
+          {layers.buildings && (
+            <Badge
+              label="Buildings"
+              color="bg-zinc-500"
+              loading={loadingBuildings}
+            />
+          )}
+          {layers.geology && (
+            <Badge
+              label="Geology"
+              color="bg-amber-600"
+              loading={loadingGeology}
+            />
+          )}
+          {layers.bathymetry && (
+            <Badge label="Bathymetry" color="bg-blue-600" />
+          )}
         </div>
       </div>
 
       {/* ---------- Measurement info ---------- */}
       {measureMode && (
         <div className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2 select-none rounded-full bg-yellow-500/90 px-4 py-1.5 text-sm font-medium text-white shadow-lg backdrop-blur-md">
-          {measurePoints.length === 0 && 'Click terrain to place first point'}
-          {measurePoints.length === 1 && 'Click terrain to place second point'}
+          {measurePoints.length === 0 && "Click terrain to place first point"}
+          {measurePoints.length === 1 && "Click terrain to place second point"}
           {measurePoints.length === 2 && distance != null && (
             <>
-              Distance: <b>{fmtDist(distance)}</b> · ΔElev:{' '}
-              <b>{(measurePoints[1].elevation - measurePoints[0].elevation).toFixed(0)} m</b>
+              Distance: <b>{fmtDist(distance)}</b> · ΔElev:{" "}
+              <b>
+                {(
+                  measurePoints[1].elevation - measurePoints[0].elevation
+                ).toFixed(0)}{" "}
+                m
+              </b>
             </>
           )}
         </div>

@@ -149,3 +149,104 @@ export function latLonToTile(
   );
   return { x, y, z: zoom };
 }
+
+/* ================================================================== */
+/*  Multi-tile stitching                                               */
+/* ================================================================== */
+
+/** Geographic extent of a Web-Mercator XYZ tile. */
+function tileBounds(x: number, y: number, z: number): BBox {
+  const n = 2 ** z;
+  const west = (x / n) * 360 - 180;
+  const east = ((x + 1) / n) * 360 - 180;
+  const nRad = Math.PI - (2 * Math.PI * y) / n;
+  const sRad = Math.PI - (2 * Math.PI * (y + 1)) / n;
+  const north = (180 / Math.PI) * Math.atan(Math.sinh(nRad));
+  const south = (180 / Math.PI) * Math.atan(Math.sinh(sRad));
+  return { west, east, north, south };
+}
+
+/**
+ * Load **all** terrain tiles that cover a bounding box and stitch
+ * them into a single `ElevationGrid`.
+ *
+ * This is the key function for accurate rendering: instead of a
+ * single 256×256 tile, we fetch a grid of tiles (e.g. 3×3 at z=11
+ * → 768×768 pixels) covering the full bbox.
+ *
+ * @param bbox         Geographic extent to cover.
+ * @param zoom         Tile zoom level (higher = more detail, more tiles).
+ * @param clampOcean   If true, elevations ≤ 0 in ocean areas are clamped to 0.
+ */
+export async function loadMultiTileDEM(
+  bbox: BBox,
+  zoom: number,
+  clampOcean = true,
+): Promise<ElevationGrid> {
+  // Tile range covering the bbox
+  const tl = latLonToTile(bbox.north, bbox.west, zoom);
+  const br = latLonToTile(bbox.south, bbox.east, zoom);
+
+  const tilesX = br.x - tl.x + 1;
+  const tilesY = br.y - tl.y + 1;
+  const TILE_PX = 256;
+
+  // Total stitched dimensions
+  const totalW = tilesX * TILE_PX;
+  const totalH = tilesY * TILE_PX;
+  const stitched = new Float32Array(totalW * totalH);
+
+  // Fetch all tiles in parallel
+  const promises: Promise<{ tx: number; ty: number; imgData: ImageData | null }>[] = [];
+  for (let ty = tl.y; ty <= br.y; ty++) {
+    for (let tx = tl.x; tx <= br.x; tx++) {
+      promises.push(
+        loadTerrainTile(zoom, tx, ty)
+          .then((imgData) => ({ tx, ty, imgData }))
+          .catch(() => ({ tx, ty, imgData: null })),
+      );
+    }
+  }
+
+  const results = await Promise.all(promises);
+
+  // Stitch tile pixels into the combined grid
+  for (const { tx, ty, imgData } of results) {
+    if (!imgData) continue;
+    const offX = (tx - tl.x) * TILE_PX;
+    const offY = (ty - tl.y) * TILE_PX;
+
+    for (let row = 0; row < TILE_PX; row++) {
+      for (let col = 0; col < TILE_PX; col++) {
+        const srcIdx = (row * TILE_PX + col) * 4;
+        const r = imgData.data[srcIdx];
+        const g = imgData.data[srcIdx + 1];
+        const b = imgData.data[srcIdx + 2];
+        let elev = decodeTerrarium(r, g, b);
+        if (clampOcean && elev < -100) elev = 0; // deep ocean → flat
+        stitched[(offY + row) * totalW + (offX + col)] = elev;
+      }
+    }
+  }
+
+  // The actual geographic extent of the stitched grid
+  const topLeft = tileBounds(tl.x, tl.y, zoom);
+  const bottomRight = tileBounds(br.x, br.y, zoom);
+  const gridBBox: BBox = {
+    west: topLeft.west,
+    east: bottomRight.east,
+    north: topLeft.north,
+    south: bottomRight.south,
+  };
+
+  const latSpan = gridBBox.north - gridBBox.south;
+
+  return {
+    width: totalW,
+    height: totalH,
+    data: stitched,
+    bbox: gridBBox,
+    noDataValue: TERRARIUM_NO_DATA,
+    resolution: (latSpan / totalH) * 111320,
+  };
+}

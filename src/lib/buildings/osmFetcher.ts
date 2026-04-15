@@ -11,8 +11,7 @@
  */
 
 import type { BuildingData } from '@/types/buildings';
-import type { BBox } from '@/types/geo';
-import { OVERPASS_API } from '@/lib/constants';
+import type { BBox } from "@/types/geo";
 
 interface OverpassElement {
   type: string;
@@ -62,10 +61,10 @@ export async function fetchBuildings(bbox: BBox): Promise<BuildingData[]> {
     out skel qt;
   `;
 
-  const response = await fetch(OVERPASS_API, {
-    method: 'POST',
+  const response = await fetch("/api/proxy/overpass", {
+    method: "POST",
     body: `data=${encodeURIComponent(query)}`,
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
   });
 
   if (!response.ok) {

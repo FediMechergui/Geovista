@@ -85,16 +85,27 @@ function fillHypsoColor(elevation: number, out: THREE.Color): THREE.Color {
  *                             the hypsometric vertex colors. Loaded
  *                             asynchronously — the mesh is returned
  *                             immediately, texture appears when ready.
+ * @param landUseCanvas        Optional OffscreenCanvas with rasterized OSM
+ *                             land-use data. When provided, overrides the
+ *                             hypsometric vertex colors with real-world
+ *                             biome/land-use coloring.
  */
 export function generateTerrainMesh(
   grid: ElevationGrid,
   verticalExaggeration: number = 1.5,
   textureUrl?: string,
+  landUseCanvas?: OffscreenCanvas,
 ): THREE.Mesh {
   const { width, height, data, bbox, noDataValue } = grid;
 
+  // Latitude correction: at higher latitudes, 1° of longitude covers fewer
+  // meters than 1° of latitude.  Scale the horizontal (east-west) extent by
+  // cos(midLat) so the mesh has the correct aspect ratio.
+  const midLat = (bbox.north + bbox.south) / 2;
+  const cosLat = Math.cos((midLat * Math.PI) / 180);
+
   const geometry = new THREE.PlaneGeometry(
-    bbox.east - bbox.west,
+    (bbox.east - bbox.west) * cosLat,
     bbox.north - bbox.south,
     width - 1,
     height - 1,
@@ -109,7 +120,9 @@ export function generateTerrainMesh(
   // top-left origin, so no row/col arithmetic is needed.
   for (let i = 0; i < positions.count; i++) {
     const raw = data[i];
-    const elevation = raw === noDataValue ? 0 : raw;
+    // Clamp ocean pixels: elevations below -10 m are treated as sea-level
+    // to avoid ripple artifacts from noisy near-zero ocean values.
+    const elevation = raw === noDataValue ? 0 : raw < -10 ? 0 : raw;
 
     positions.setZ(i, elevation * elevScale);
 
@@ -120,15 +133,38 @@ export function generateTerrainMesh(
   }
 
   positions.needsUpdate = true;
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
   geometry.computeVertexNormals();
 
-  const material = new THREE.MeshPhongMaterial({
-    vertexColors: true,
-    side: THREE.DoubleSide,
-    flatShading: false,
-    shininess: 10,
-  });
+  // When a land-use canvas is provided, create a texture from it and
+  // use it as the primary coloring instead of per-vertex hypsometric colors.
+  // The UV coordinates from PlaneGeometry map 0→1 across the surface.
+  let material: THREE.MeshPhongMaterial;
+
+  if (landUseCanvas) {
+    const canvasTexture = new THREE.CanvasTexture(
+      landUseCanvas as unknown as HTMLCanvasElement,
+    );
+    canvasTexture.colorSpace = THREE.SRGBColorSpace;
+    canvasTexture.minFilter = THREE.LinearFilter;
+    canvasTexture.magFilter = THREE.LinearFilter;
+    canvasTexture.wrapS = THREE.ClampToEdgeWrapping;
+    canvasTexture.wrapT = THREE.ClampToEdgeWrapping;
+
+    material = new THREE.MeshPhongMaterial({
+      map: canvasTexture,
+      side: THREE.DoubleSide,
+      flatShading: false,
+      shininess: 8,
+    });
+  } else {
+    material = new THREE.MeshPhongMaterial({
+      vertexColors: true,
+      side: THREE.DoubleSide,
+      flatShading: false,
+      shininess: 10,
+    });
+  }
 
   // Async draped imagery — mesh is usable before the texture resolves.
   if (textureUrl) {
@@ -142,7 +178,7 @@ export function generateTerrainMesh(
       },
       undefined,
       (err) => {
-        console.warn('[meshGenerator] terrain texture load failed:', err);
+        console.warn("[meshGenerator] terrain texture load failed:", err);
       },
     );
   }
@@ -151,7 +187,7 @@ export function generateTerrainMesh(
   mesh.rotation.x = -Math.PI / 2;
   mesh.receiveShadow = true;
   mesh.castShadow = true;
-  mesh.userData = { type: 'terrain', verticalExaggeration };
+  mesh.userData = { type: "terrain", verticalExaggeration };
   return mesh;
 }
 
@@ -171,7 +207,7 @@ export function generateGeologyLayers(
   verticalExaggeration: number = 1.5,
 ): THREE.Group {
   const group = new THREE.Group();
-  group.userData = { type: 'geology-stack' };
+  group.userData = { type: "geology-stack" };
 
   if (layers.length === 0) return group;
 
@@ -181,6 +217,10 @@ export function generateGeologyLayers(
   const vertsPerRow = wSeg + 1;
   const vertsPerCol = hSeg + 1;
 
+  // Latitude correction (matches terrain mesh)
+  const midLat = (bbox.north + bbox.south) / 2;
+  const cosLat = Math.cos((midLat * Math.PI) / 180);
+
   // Sample stride into the source grid (floating point so we cover the full range).
   const stepW = (width - 1) / wSeg;
   const stepH = (height - 1) / hSeg;
@@ -188,7 +228,7 @@ export function generateGeologyLayers(
 
   for (const layer of layers) {
     const geometry = new THREE.PlaneGeometry(
-      bbox.east - bbox.west,
+      (bbox.east - bbox.west) * cosLat,
       bbox.north - bbox.south,
       wSeg,
       hSeg,
@@ -223,7 +263,7 @@ export function generateGeologyLayers(
     const mesh = new THREE.Mesh(geometry, material);
     mesh.rotation.x = -Math.PI / 2;
     mesh.userData = {
-      type: 'geology-layer',
+      type: "geology-layer",
       name: layer.name,
       lith: layer.lith,
       depthTop: layer.depthTop,
@@ -269,6 +309,7 @@ export function generateBuildingMeshes(
 
   const centerLon = (bbox.west + bbox.east) / 2;
   const centerLat = (bbox.south + bbox.north) / 2;
+  const cosLat = Math.cos((centerLat * Math.PI) / 180);
 
   // Single shared material — OSM buildings are unlit neutral gray by default.
   // DoubleSide protects against CW/CCW winding in OSM polygon data.
@@ -290,7 +331,7 @@ export function generateBuildingMeshes(
     const shape = new THREE.Shape();
     for (let i = 0; i < coords.length; i++) {
       const [lon, lat] = coords[i];
-      const x = lon - centerLon;
+      const x = (lon - centerLon) * cosLat;
       const y = lat - centerLat;
       if (i === 0) shape.moveTo(x, y);
       else shape.lineTo(x, y);

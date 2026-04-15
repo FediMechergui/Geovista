@@ -1,17 +1,21 @@
 'use client';
 
 /**
- * CesiumViewer — a 3D globe view using CesiumJS via Resium React bindings.
+ * CesiumViewer — high-fidelity 3D globe view using CesiumJS via Resium.
  *
- * All Cesium features used here are **free / open-source** (Apache 2.0).
- * No Cesium Ion token is needed — we use:
- *   - OpenStreetMap raster tiles for imagery
- *   - EllipsoidTerrainProvider (flat terrain — free)
- *   - createOsmBuildingsAsync for 3D buildings (Cesium ION free tier optional)
+ * Data sources (all FREE tier):
  *
- * Static assets (Workers, ThirdParty, Assets, Widgets) must be copied to
- * public/cesium/ at build time. The guide's webpack CopyPlugin handles
- * that, or you can run `bootstrap.sh` / manually copy them.
+ * 1. **Cesium World Terrain** (Ion free tier) — accurate 30 m global DEM
+ *    with water bodies, ice, and bathymetry.
+ * 2. **Cesium OSM Buildings** (Ion free tier) — 3D extruded buildings
+ *    worldwide derived from OpenStreetMap.
+ * 3. **Google Photorealistic 3D Tiles** (Maps API free tier) — photogrammetry
+ *    meshes of cities (100 k tiles/month free). Requires API key.
+ * 4. **OpenStreetMap raster imagery** — free, no key.
+ *
+ * Set these environment variables in `.env.local`:
+ *   NEXT_PUBLIC_CESIUM_ION_TOKEN   — enables World Terrain + OSM Buildings
+ *   NEXT_PUBLIC_GOOGLE_MAPS_API_KEY — enables Google 3D Tiles
  */
 
 import {
@@ -37,6 +41,7 @@ import {
   Cartographic,
   Color,
   EllipsoidTerrainProvider,
+  CesiumTerrainProvider,
   ScreenSpaceEventType,
   LabelStyle,
   VerticalOrigin,
@@ -44,6 +49,7 @@ import {
   Rectangle,
   Ion,
   createOsmBuildingsAsync,
+  createWorldTerrainAsync,
   defined,
   Math as CesiumMath,
   Cesium3DTileset as Cesium3DTilesetClass,
@@ -52,8 +58,9 @@ import {
 
 import { useMapStore } from '@/store/mapStore';
 import { geodesicDistance } from '@/lib/analysis/coordTransform';
+import { CESIUM_ION_TOKEN, GOOGLE_MAPS_API_KEY, GOOGLE_3D_TILES_URL } from '@/lib/constants';
 import type { BBox } from '@/types/geo';
-import { Ruler, X, Trash2, Loader2 } from 'lucide-react';
+import { Ruler, X, Trash2, Loader2, Globe2, Box } from 'lucide-react';
 
 /* ================================================================== */
 /*  Cesium base URL — must point at the static assets in public/       */
@@ -62,6 +69,11 @@ import { Ruler, X, Trash2, Loader2 } from 'lucide-react';
 if (typeof window !== 'undefined') {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).CESIUM_BASE_URL = '/cesium';
+
+  // Set Ion token if available (enables World Terrain + OSM Buildings)
+  if (CESIUM_ION_TOKEN) {
+    Ion.defaultAccessToken = CESIUM_ION_TOKEN;
+  }
 }
 
 /* ================================================================== */
@@ -112,6 +124,12 @@ export default function CesiumViewer() {
   const [osmBuildings, setOsmBuildings] = useState<Cesium3DTilesetClass | null>(null);
   const [buildingsLoading, setBuildingsLoading] = useState(false);
   const [flyDestination, setFlyDestination] = useState<Rectangle | null>(null);
+  const [google3DTilesUrl, setGoogle3DTilesUrl] = useState<string | null>(null);
+  const [terrainProvider, setTerrainProvider] = useState<
+    EllipsoidTerrainProvider | CesiumTerrainProvider
+  >(() => new EllipsoidTerrainProvider());
+  const hasIon = !!CESIUM_ION_TOKEN;
+  const hasGoogle = !!GOOGLE_MAPS_API_KEY;
 
   /* ================================================================ */
   /*  Fly to selected region when it changes                           */
@@ -146,6 +164,39 @@ export default function CesiumViewer() {
   }, [underground]);
 
   /* ================================================================ */
+  /*  Cesium World Terrain (Ion free tier — ~30 m global DEM)          */
+  /* ================================================================ */
+
+  useEffect(() => {
+    if (!hasIon) return;
+    let cancelled = false;
+    createWorldTerrainAsync({
+      requestWaterMask: true,
+      requestVertexNormals: true,
+    })
+      .then((tp) => {
+        if (!cancelled) setTerrainProvider(tp);
+      })
+      .catch((err) => {
+        console.warn('[CesiumViewer] World Terrain failed:', err);
+      });
+    return () => { cancelled = true; };
+  }, [hasIon]);
+
+  /* ================================================================ */
+  /*  Google Photorealistic 3D Tiles (Maps API free tier)              */
+  /* ================================================================ */
+
+  useEffect(() => {
+    if (!hasGoogle) {
+      setGoogle3DTilesUrl(null);
+      return;
+    }
+    // Append the API key as a query parameter to the tileset root.json URL
+    setGoogle3DTilesUrl(`${GOOGLE_3D_TILES_URL}?key=${GOOGLE_MAPS_API_KEY}`);
+  }, [hasGoogle]);
+
+  /* ================================================================ */
   /*  OSM 3D Buildings (Cesium Ion free-tier — optional)                */
   /* ================================================================ */
 
@@ -156,7 +207,7 @@ export default function CesiumViewer() {
     }
 
     // Only attempt if Ion token is set (free tier provides buildings)
-    if (!Ion.defaultAccessToken) {
+    if (!hasIon) {
       return;
     }
 
@@ -319,7 +370,7 @@ export default function CesiumViewer() {
         ref={(e) => {
           if (e?.cesiumElement) handleViewerReady(e.cesiumElement);
         }}
-        terrainProvider={new EllipsoidTerrainProvider()}
+        terrainProvider={terrainProvider}
         // Disable UI chrome we don't need
         animation={false}
         timeline={false}
@@ -352,8 +403,16 @@ export default function CesiumViewer() {
           />
         )}
 
+        {/* Google Photorealistic 3D Tiles (if API key provided) */}
+        {google3DTilesUrl && (
+          <Cesium3DTileset
+            url={google3DTilesUrl}
+            showCreditsOnScreen
+          />
+        )}
+
         {/* OSM 3D Buildings */}
-        {osmBuildings && layers.buildings && (
+        {osmBuildings && layers.buildings && !google3DTilesUrl && (
           <Cesium3DTileset url={osmBuildings.resource} />
         )}
 
@@ -433,6 +492,25 @@ export default function CesiumViewer() {
           Loading 3D buildings…
         </div>
       )}
+
+      {/* Data source indicators */}
+      <div className="absolute bottom-3 right-3 flex flex-col gap-1">
+        {hasIon && (
+          <div className="flex items-center gap-1.5 rounded bg-emerald-600/80 px-2 py-1 text-[10px] font-medium text-white backdrop-blur-sm">
+            <Globe2 size={10} /> Cesium World Terrain
+          </div>
+        )}
+        {google3DTilesUrl && (
+          <div className="flex items-center gap-1.5 rounded bg-blue-600/80 px-2 py-1 text-[10px] font-medium text-white backdrop-blur-sm">
+            <Box size={10} /> Google 3D Tiles
+          </div>
+        )}
+        {osmBuildings && !google3DTilesUrl && (
+          <div className="flex items-center gap-1.5 rounded bg-orange-600/80 px-2 py-1 text-[10px] font-medium text-white backdrop-blur-sm">
+            <Box size={10} /> OSM 3D Buildings
+          </div>
+        )}
+      </div>
     </div>
   );
 }

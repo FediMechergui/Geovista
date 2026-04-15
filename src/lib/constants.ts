@@ -1,8 +1,31 @@
 export const TILE_URLS = {
-  osm: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-  terrain: 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
-  stamen: 'https://tiles.stadiamaps.com/tiles/stamen_terrain/{z}/{x}/{y}.png',
+  osm: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  terrain:
+    "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
+  /** MapTiler terrain-RGB — higher quality than Terrarium at zoom 12+. Free tier: 100k req/month. */
+  terrainRGB: "https://api.maptiler.com/tiles/terrain-rgb-v2/{z}/{x}/{y}.webp",
+  stamen: "https://tiles.stadiamaps.com/tiles/stamen_terrain/{z}/{x}/{y}.png",
+  /** Satellite imagery — for texture draping on terrain. */
+  satellite:
+    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
 } as const;
+
+/** Google Photorealistic 3D Tiles endpoint (requires NEXT_PUBLIC_GOOGLE_MAPS_API_KEY). */
+export const GOOGLE_3D_TILES_URL =
+  'https://tile.googleapis.com/v1/3dtiles/root.json';
+
+/** Cesium Ion access token (free tier — OSM Buildings + World Terrain). */
+export const CESIUM_ION_TOKEN =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI4YjM3ODFkZi0zMWUzLTQ1MjgtYTRjZi05N2VjODRlYzQ0N2YiLCJpZCI6NDE4NjEwLCJpYXQiOjE3NzYyNjAyMjB9.AWrk6bbHop9SQiMPotjFXW5vEh7lwFcwzIcPHQEonOw';
+
+/** Google Maps API key for Photorealistic 3D Tiles (free tier: 100k loads/month). */
+export const GOOGLE_MAPS_API_KEY = 'AIzaSyBhjXgPkY3W-E6fV-qkgFf0KnkohsI2MsA';
+
+/** MapTiler API key (free tier: 100k req/month — terrain-rgb, satellite). */
+export const MAPTILER_API_KEY = 'aosV7l6Uy3wSPBEbvSw7';
+
+/** Overture Maps API key. */
+export const OVERTURE_API_KEY = 'live_NPk1P5NH6WbbW7nCce0X4pH6dpg9JFMu1pk1yXcFXrMmfVAFRibUY07O9Y1uTNZ5';
 
 export const MAPLIBRE_STYLE = {
   version: 8 as const,

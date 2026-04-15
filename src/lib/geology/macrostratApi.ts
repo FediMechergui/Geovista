@@ -15,8 +15,7 @@ import type {
   GeologicalUnit,
   GeologyLayerDef,
 } from '@/types/geology';
-import type { BBox } from '@/types/geo';
-import { MACROSTRAT_API } from '@/lib/constants';
+import type { BBox } from "@/types/geo";
 
 interface MacrostratColumn {
   col_id: number;
@@ -54,7 +53,7 @@ export async function fetchGeologicalColumn(
 ): Promise<GeologicalColumn | null> {
   try {
     const colRes = await fetch(
-      `${MACROSTRAT_API}/columns?lat=${lat}&lng=${lng}&adjacents=false&response=long`,
+      `/api/proxy/macrostrat?path=/columns&lat=${lat}&lng=${lng}&adjacents=false&response=long`,
     );
     if (!colRes.ok) return null;
     const colData = (await colRes.json()) as MacrostratResponse<MacrostratColumn>;
@@ -63,7 +62,7 @@ export async function fetchGeologicalColumn(
     if (!col) return null;
 
     const unitsRes = await fetch(
-      `${MACROSTRAT_API}/units?col_id=${col.col_id}&response=long`,
+      `/api/proxy/macrostrat?path=/units&col_id=${col.col_id}&response=long`,
     );
     if (!unitsRes.ok) return null;
     const unitsData = (await unitsRes.json()) as MacrostratResponse<MacrostratUnit>;
@@ -102,7 +101,7 @@ export async function fetchGeologicalColumn(
 export async function fetchSurfaceGeology(bbox: BBox): Promise<unknown> {
   const { west, south, east, north } = bbox;
   const response = await fetch(
-    `${MACROSTRAT_API}/geologic_units/map?bbox=${west},${south},${east},${north}`,
+    `/api/proxy/macrostrat?path=/geologic_units/map&bbox=${west},${south},${east},${north}`,
   );
   if (!response.ok) {
     throw new Error(
