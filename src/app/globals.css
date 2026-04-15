@@ -1,8 +1,21 @@
 @import "tailwindcss";
 
+/* Cesium widget styles */
+@import "cesium/Build/Cesium/Widgets/widgets.css";
+/* MapLibre styles */
+@import "maplibre-gl/dist/maplibre-gl.css";
+
+/* ================================================================== */
+/*  CSS Custom Properties                                              */
+/* ================================================================== */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0a0a0a;
+  --foreground: #ededed;
+  --sidebar-w: 280px;
+  --toolbar-h: 48px;
+  --accent: #3b82f6;
+  --accent-glow: rgba(59, 130, 246, 0.25);
 }
 
 @theme inline {
@@ -12,15 +25,181 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+/* ================================================================== */
+/*  Base                                                                */
+/* ================================================================== */
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  overflow: hidden;
+}
+
+/* ================================================================== */
+/*  Cesium dark-theme overrides                                        */
+/* ================================================================== */
+
+.cesium-viewer .cesium-widget-credits {
+  display: none !important;
+}
+.cesium-viewer .cesium-toolbar-button,
+.cesium-viewer .cesium-baseLayerPicker-dropDown,
+.cesium-viewer .cesium-navigation-help {
+  background: #18181b !important;
+  border-color: #3f3f46 !important;
+  color: #d4d4d8 !important;
+}
+.cesium-viewer .cesium-button:hover {
+  background: #27272a !important;
+}
+.cesium-viewer .cesium-infoBox {
+  background: rgba(24, 24, 27, 0.95) !important;
+  color: #e4e4e7 !important;
+  border-color: #3f3f46 !important;
+}
+
+/* ================================================================== */
+/*  Scrollbar                                                          */
+/* ================================================================== */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3f3f46 transparent;
+}
+
+/* ================================================================== */
+/*  Panel resize handle                                                */
+/* ================================================================== */
+
+[data-panel-resize-handle-id] {
+  background: #27272a;
+  transition: background 150ms;
+}
+[data-panel-resize-handle-id]:hover,
+[data-panel-resize-handle-id][data-resize-handle-active] {
+  background: var(--accent);
+}
+
+/* ================================================================== */
+/*  Map container                                                      */
+/* ================================================================== */
+
+.maplibregl-map,
+.mapboxgl-map {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.maplibregl-ctrl-attrib {
+  background: rgba(24, 24, 27, 0.7) !important;
+  color: #71717a !important;
+  font-size: 10px !important;
+}
+
+.maplibregl-ctrl-attrib a {
+  color: #a1a1aa !important;
+}
+
+/* ================================================================== */
+/*  Loading animations                                                 */
+/* ================================================================== */
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 var(--accent-glow);
+  }
+  50% {
+    box-shadow: 0 0 12px 4px var(--accent-glow);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.25s ease-out;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 2s infinite;
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    #27272a 25%,
+    #3f3f46 50%,
+    #27272a 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s infinite;
+}
+
+/* ================================================================== */
+/*  Responsive: hide sidebar on small screens by default               */
+/* ================================================================== */
+
+@media (max-width: 768px) {
+  :root {
+    --sidebar-w: 100%;
+  }
+}
+
+/* ================================================================== */
+/*  Keyboard shortcut hint badges                                      */
+/* ================================================================== */
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  padding: 1px 5px;
+  border: 1px solid #3f3f46;
+  border-radius: 4px;
+  background: #27272a;
+  font-family: monospace;
+  font-size: 10px;
+  color: #a1a1aa;
+  line-height: 1.4;
 }
