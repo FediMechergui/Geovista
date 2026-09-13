@@ -1,58 +1,123 @@
 import { create } from 'zustand';
-import { BBox, SelectionMode, Basemap, LayerVisibility } from '@/types/geo';
+import type {
+  BBox,
+  SelectionMode,
+  Basemap,
+  LayerVisibility,
+  ViewerMode,
+  TerrainTexture,
+  PlaceInfo,
+  RegionStats,
+  FlyToRequest,
+  ElevationGrid,
+} from '@/types/geo';
+import type { GeologicalColumn } from '@/types/geology';
 
 interface MapState {
+  /* ---- 2D map ---- */
   center: [number, number];
   zoom: number;
+  basemap: Basemap;
+  cursorCoord: { lon: number; lat: number } | null;
+  flyTo: FlyToRequest | null;
+
+  /* ---- Selection ---- */
   selectedRegion: BBox | null;
   selectionMode: SelectionMode;
-  basemap: Basemap;
-  layers: LayerVisibility;
+
+  /* ---- 3D ---- */
   is3DActive: boolean;
+  viewerMode: ViewerMode;
+  layers: LayerVisibility;
   verticalExaggeration: number;
   underground: boolean;
-  cursorCoord: { lon: number; lat: number } | null;
+  terrainTexture: TerrainTexture;
 
+  /* ---- Place data (derived from the selected region) ---- */
+  placeInfo: PlaceInfo | null;
+  regionStats: RegionStats | null;
+  geologyColumn: GeologicalColumn | null;
+  elevationGrid: ElevationGrid | null;
+
+  /* ---- Actions ---- */
   setCenter: (c: [number, number]) => void;
   setZoom: (z: number) => void;
+  setBasemap: (b: Basemap) => void;
+  setCursorCoord: (c: { lon: number; lat: number } | null) => void;
+  requestFlyTo: (center: [number, number], zoom: number) => void;
+
   setSelectedRegion: (b: BBox | null) => void;
   setSelectionMode: (m: SelectionMode) => void;
-  toggleLayer: (l: keyof LayerVisibility) => void;
-  setBasemap: (b: Basemap) => void;
+
   set3DActive: (a: boolean) => void;
+  setViewerMode: (m: ViewerMode) => void;
+  toggleLayer: (l: keyof LayerVisibility) => void;
   setVerticalExaggeration: (v: number) => void;
   setUnderground: (u: boolean) => void;
-  setCursorCoord: (c: { lon: number; lat: number } | null) => void;
+  setTerrainTexture: (t: TerrainTexture) => void;
+
+  setPlaceInfo: (p: PlaceInfo | null) => void;
+  setRegionStats: (s: RegionStats | null) => void;
+  setGeologyColumn: (c: GeologicalColumn | null) => void;
+  setElevationGrid: (g: ElevationGrid | null) => void;
 }
 
 export const useMapStore = create<MapState>((set) => ({
   center: [10, 34],
   zoom: 3,
+  basemap: 'osm',
+  cursorCoord: null,
+  flyTo: null,
+
   selectedRegion: null,
   selectionMode: null,
-  basemap: 'osm',
+
+  is3DActive: false,
+  viewerMode: 'globe',
   layers: {
-    terrain: true,
     buildings: true,
     geology: false,
-    bathymetry: false,
-    satellite: false,
-    contours: false,
+    water: true,
   },
-  is3DActive: false,
-  verticalExaggeration: 1.5,
+  verticalExaggeration: 1.0,
   underground: false,
-  cursorCoord: null,
+  terrainTexture: 'satellite',
+
+  placeInfo: null,
+  regionStats: null,
+  geologyColumn: null,
+  elevationGrid: null,
 
   setCenter: (center) => set({ center }),
   setZoom: (zoom) => set({ zoom }),
-  setSelectedRegion: (bbox) => set({ selectedRegion: bbox }),
+  setBasemap: (basemap) => set({ basemap }),
+  setCursorCoord: (c) => set({ cursorCoord: c }),
+  requestFlyTo: (center, zoom) =>
+    set((s) => ({
+      flyTo: { center, zoom, nonce: (s.flyTo?.nonce ?? 0) + 1 },
+    })),
+
+  // Changing the region invalidates everything derived from it.
+  setSelectedRegion: (bbox) =>
+    set({
+      selectedRegion: bbox,
+      placeInfo: null,
+      regionStats: null,
+      geologyColumn: null,
+      elevationGrid: null,
+    }),
   setSelectionMode: (mode) => set({ selectionMode: mode }),
+
+  set3DActive: (active) => set({ is3DActive: active }),
+  setViewerMode: (viewerMode) => set({ viewerMode }),
   toggleLayer: (layer) =>
     set((s) => ({ layers: { ...s.layers, [layer]: !s.layers[layer] } })),
-  setBasemap: (basemap) => set({ basemap }),
-  set3DActive: (active) => set({ is3DActive: active }),
   setVerticalExaggeration: (v) => set({ verticalExaggeration: v }),
   setUnderground: (u) => set({ underground: u }),
-  setCursorCoord: (c) => set({ cursorCoord: c }),
+  setTerrainTexture: (terrainTexture) => set({ terrainTexture }),
+
+  setPlaceInfo: (placeInfo) => set({ placeInfo }),
+  setRegionStats: (regionStats) => set({ regionStats }),
+  setGeologyColumn: (geologyColumn) => set({ geologyColumn }),
+  setElevationGrid: (elevationGrid) => set({ elevationGrid }),
 }));

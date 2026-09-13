@@ -1,92 +1,76 @@
 'use client';
 
 /**
- * CesiumViewer — high-fidelity 3D globe view using CesiumJS via Resium.
+ * CesiumViewer — photorealistic digital twin on a full globe.
  *
- * Data sources (all FREE tier):
+ * Sources (all free tiers):
+ *   1. Google Photorealistic 3D Tiles — photogrammetry meshes of real cities
+ *      and terrain worldwide (NEXT_PUBLIC_GOOGLE_MAPS_API_KEY, Map Tiles API).
+ *   2. Cesium World Terrain — 30 m global DEM (NEXT_PUBLIC_CESIUM_ION_TOKEN).
+ *   3. Cesium OSM Buildings — worldwide extruded buildings with OSM metadata.
+ *   4. Esri World Imagery — satellite basemap, no key.
  *
- * 1. **Cesium World Terrain** (Ion free tier) — accurate 30 m global DEM
- *    with water bodies, ice, and bathymetry.
- * 2. **Cesium OSM Buildings** (Ion free tier) — 3D extruded buildings
- *    worldwide derived from OpenStreetMap.
- * 3. **Google Photorealistic 3D Tiles** (Maps API free tier) — photogrammetry
- *    meshes of cities (100 k tiles/month free). Requires API key.
- * 4. **OpenStreetMap raster imagery** — free, no key.
- *
- * Set these environment variables in `.env.local`:
- *   NEXT_PUBLIC_CESIUM_ION_TOKEN   — enables World Terrain + OSM Buildings
- *   NEXT_PUBLIC_GOOGLE_MAPS_API_KEY — enables Google 3D Tiles
+ * The Cesium Viewer is driven imperatively: React owns the container and the
+ * overlay UI, Cesium owns the scene.
  */
 
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
-import {
-  Viewer as CesiumViewerComponent,
-  Entity,
-  Globe,
-  Scene,
-  ScreenSpaceEventHandler,
-  CameraFlyTo,
-  Cesium3DTileset,
-  ImageryLayer,
-} from 'resium';
-import {
-  Viewer as CesiumViewerClass,
+  Viewer,
+  Ion,
   Cartesian3,
   Cartographic,
   Color,
+  Credit,
   EllipsoidTerrainProvider,
-  CesiumTerrainProvider,
+  ImageryLayer,
+  UrlTemplateImageryProvider,
+  ScreenSpaceEventHandler,
   ScreenSpaceEventType,
+  Math as CesiumMath,
+  createWorldTerrainAsync,
+  createOsmBuildingsAsync,
+  createGooglePhotorealistic3DTileset,
+  Cesium3DTileset,
+  Cesium3DTileFeature,
+  PolylineGlowMaterialProperty,
   LabelStyle,
   VerticalOrigin,
-  OpenStreetMapImageryProvider,
-  Rectangle,
-  Ion,
-  createOsmBuildingsAsync,
-  createWorldTerrainAsync,
+  Cartesian2,
+  Entity,
+  ClassificationType,
   defined,
-  Math as CesiumMath,
-  Cesium3DTileset as Cesium3DTilesetClass,
-  PolylineGlowMaterialProperty,
 } from 'cesium';
 
 import { useMapStore } from '@/store/mapStore';
 import { geodesicDistance } from '@/lib/analysis/coordTransform';
-import { CESIUM_ION_TOKEN, GOOGLE_MAPS_API_KEY, GOOGLE_3D_TILES_URL } from '@/lib/constants';
+import {
+  CESIUM_BASE_URL,
+  CESIUM_ION_TOKEN,
+  GOOGLE_MAPS_API_KEY,
+  TILE_URLS,
+} from '@/lib/constants';
 import type { BBox } from '@/types/geo';
-import { Ruler, X, Trash2, Loader2, Globe2, Box } from 'lucide-react';
+import { Ruler, X, Trash2, Loader2, Globe2, Box, Building2, MapPin } from 'lucide-react';
 
 /* ================================================================== */
-/*  Cesium base URL — must point at the static assets in public/       */
+/*  Module setup (client only — this file is dynamically imported)     */
 /* ================================================================== */
+
+const HAS_ION = CESIUM_ION_TOKEN.length > 0;
+const HAS_GOOGLE = GOOGLE_MAPS_API_KEY.length > 0;
 
 if (typeof window !== 'undefined') {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  (window as any).CESIUM_BASE_URL = '/cesium';
-
-  // Set Ion token if available (enables World Terrain + OSM Buildings)
-  if (CESIUM_ION_TOKEN) {
-    Ion.defaultAccessToken = CESIUM_ION_TOKEN;
-  }
+  (window as unknown as { CESIUM_BASE_URL: string }).CESIUM_BASE_URL = CESIUM_BASE_URL;
+  if (HAS_ION) Ion.defaultAccessToken = CESIUM_ION_TOKEN;
 }
 
 /* ================================================================== */
-/*  Helpers                                                            */
+/*  Types & helpers                                                    */
 /* ================================================================== */
 
-function bboxToRectangle(b: BBox): Rectangle {
-  return Rectangle.fromDegrees(b.west, b.south, b.east, b.north);
-}
-
-function fmtDist(m: number): string {
-  return m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${m.toFixed(0)} m`;
-}
+type GlobeSource = 'google' | 'cesium';
+type Status = 'idle' | 'loading' | 'ready' | 'failed';
 
 interface MeasurePoint {
   cartesian: Cartesian3;
@@ -95,13 +79,72 @@ interface MeasurePoint {
   height: number;
 }
 
-/* ================================================================== */
-/*  Free imagery provider (no API key)                                 */
-/* ================================================================== */
+interface FeatureInfo {
+  kind: 'building' | 'point';
+  title: string;
+  rows: [string, string][];
+}
 
-const osmImageryProvider = new OpenStreetMapImageryProvider({
-  url: 'https://tile.openstreetmap.org/',
-});
+const OSM_BUILDING_PROPS: [string, string][] = [
+  ['building', 'Type'],
+  ['cesium#estimatedHeight', 'Height (m)'],
+  ['building:levels', 'Levels'],
+  ['addr:housenumber', 'Number'],
+  ['addr:street', 'Street'],
+  ['addr:city', 'City'],
+  ['addr:postcode', 'Postcode'],
+  ['amenity', 'Amenity'],
+  ['shop', 'Shop'],
+  ['elementId', 'OSM id'],
+];
+
+function fmtDist(m: number): string {
+  return m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${m.toFixed(0)} m`;
+}
+
+function esriImagery(): ImageryLayer {
+  return new ImageryLayer(
+    new UrlTemplateImageryProvider({
+      url: TILE_URLS.satellite,
+      credit: new Credit('Esri, Maxar, Earthstar Geographics'),
+      maximumLevel: 19,
+    }),
+  );
+}
+
+/** Pick a world position on 3D tiles / terrain / ellipsoid, in that order. */
+function pickWorldPosition(viewer: Viewer, windowPos: Cartesian2): Cartesian3 | undefined {
+  const scene = viewer.scene;
+  if (scene.pickPositionSupported) {
+    const p = scene.pickPosition(windowPos);
+    if (defined(p)) return p;
+  }
+  const ray = viewer.camera.getPickRay(windowPos);
+  if (ray) {
+    const p = scene.globe.pick(ray, scene);
+    if (defined(p)) return p;
+  }
+  return viewer.camera.pickEllipsoid(windowPos, scene.globe.ellipsoid) ?? undefined;
+}
+
+/** Oblique fly-to that frames a bbox from the south at ~40° pitch. */
+function flyToBBox(viewer: Viewer, b: BBox, groundHeight = 0) {
+  const lat = (b.south + b.north) / 2;
+  const lon = (b.west + b.east) / 2;
+  const cosLat = Math.cos((lat * Math.PI) / 180);
+  const spanM = Math.max((b.east - b.west) * 111320 * cosLat, (b.north - b.south) * 111320);
+
+  const pitch = CesiumMath.toRadians(-40);
+  const height = spanM * 0.95 + groundHeight;
+  const back = height / Math.tan(-pitch);
+  const camLat = lat - (back / 111320);
+
+  viewer.camera.flyTo({
+    destination: Cartesian3.fromDegrees(lon, camLat, height),
+    orientation: { heading: 0, pitch, roll: 0 },
+    duration: 2.2,
+  });
+}
 
 /* ================================================================== */
 /*  CesiumViewer                                                       */
@@ -110,405 +153,558 @@ const osmImageryProvider = new OpenStreetMapImageryProvider({
 export default function CesiumViewer() {
   /* ---- Store ---- */
   const selectedRegion = useMapStore((s) => s.selectedRegion);
+  const center = useMapStore((s) => s.center);
+  const zoom = useMapStore((s) => s.zoom);
   const layers = useMapStore((s) => s.layers);
   const verticalExaggeration = useMapStore((s) => s.verticalExaggeration);
   const underground = useMapStore((s) => s.underground);
+  const regionStats = useMapStore((s) => s.regionStats);
   const set3DActive = useMapStore((s) => s.set3DActive);
+  const setCursorCoord = useMapStore((s) => s.setCursorCoord);
 
   /* ---- Refs ---- */
-  const viewerRef = useRef<CesiumViewerClass | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewerRef = useRef<Viewer | null>(null);
+  const googleRef = useRef<Cesium3DTileset | null>(null);
+  const osmRef = useRef<Cesium3DTileset | null>(null);
+  const regionEntityRef = useRef<Entity | null>(null);
+  const measureEntitiesRef = useRef<Entity[]>([]);
+  const highlightRef = useRef<{ feature: Cesium3DTileFeature; color: Color } | null>(null);
+  const measureModeRef = useRef(false);
+  const lastMoveRef = useRef(0);
 
-  /* ---- Local state ---- */
+  /* ---- State ---- */
+  const [ready, setReady] = useState(false);
+  const [source, setSource] = useState<GlobeSource>(HAS_GOOGLE ? 'google' : 'cesium');
+  const [googleStatus, setGoogleStatus] = useState<Status>('idle');
+  const [terrainStatus, setTerrainStatus] = useState<Status>('idle');
+  const [buildingsStatus, setBuildingsStatus] = useState<Status>('idle');
   const [measureMode, setMeasureMode] = useState(false);
   const [measurePoints, setMeasurePoints] = useState<MeasurePoint[]>([]);
-  const [osmBuildings, setOsmBuildings] = useState<Cesium3DTilesetClass | null>(null);
-  const [buildingsLoading, setBuildingsLoading] = useState(false);
-  const [flyDestination, setFlyDestination] = useState<Rectangle | null>(null);
-  const [google3DTilesUrl, setGoogle3DTilesUrl] = useState<string | null>(null);
-  const [terrainProvider, setTerrainProvider] = useState<
-    EllipsoidTerrainProvider | CesiumTerrainProvider
-  >(() => new EllipsoidTerrainProvider());
-  const hasIon = !!CESIUM_ION_TOKEN;
-  const hasGoogle = !!GOOGLE_MAPS_API_KEY;
+  const [featureInfo, setFeatureInfo] = useState<FeatureInfo | null>(null);
+
+  useEffect(() => {
+    measureModeRef.current = measureMode;
+  }, [measureMode]);
 
   /* ================================================================ */
-  /*  Fly to selected region when it changes                           */
+  /*  Viewer lifecycle                                                 */
   /* ================================================================ */
 
   useEffect(() => {
-    if (selectedRegion) {
-      setFlyDestination(bboxToRectangle(selectedRegion));
+    const container = containerRef.current;
+    if (!container) return;
+
+    const viewer = new Viewer(container, {
+      animation: false,
+      timeline: false,
+      baseLayerPicker: false,
+      geocoder: false,
+      homeButton: false,
+      navigationHelpButton: false,
+      sceneModePicker: false,
+      fullscreenButton: false,
+      selectionIndicator: false,
+      infoBox: false,
+      baseLayer: esriImagery(),
+      terrainProvider: new EllipsoidTerrainProvider(),
+      msaaSamples: 4,
+    });
+
+    viewer.scene.globe.depthTestAgainstTerrain = true;
+    viewer.scene.globe.enableLighting = false;
+    viewer.scene.postProcessStages.fxaa.enabled = true;
+    if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = true;
+
+    viewerRef.current = viewer;
+    setReady(true);
+
+    if (HAS_ION) {
+      setTerrainStatus('loading');
+      createWorldTerrainAsync({ requestVertexNormals: true, requestWaterMask: true })
+        .then((tp) => {
+          if (viewer.isDestroyed()) return;
+          viewer.terrainProvider = tp;
+          setTerrainStatus('ready');
+        })
+        .catch((err) => {
+          console.warn('[CesiumViewer] World Terrain failed:', err);
+          setTerrainStatus('failed');
+        });
     }
-  }, [selectedRegion]);
+
+    return () => {
+      viewerRef.current = null;
+      googleRef.current = null;
+      osmRef.current = null;
+      regionEntityRef.current = null;
+      measureEntitiesRef.current = [];
+      highlightRef.current = null;
+      setReady(false);
+      viewer.destroy();
+    };
+  }, []);
 
   /* ================================================================ */
-  /*  Vertical exaggeration                                            */
+  /*  Google Photorealistic 3D Tiles                                   */
   /* ================================================================ */
 
   useEffect(() => {
     const viewer = viewerRef.current;
-    if (!viewer) return;
-    viewer.scene.verticalExaggeration = verticalExaggeration;
-  }, [verticalExaggeration]);
+    if (!ready || !viewer) return;
 
-  /* ================================================================ */
-  /*  Underground navigation                                           */
-  /* ================================================================ */
+    const wantGoogle = source === 'google' && HAS_GOOGLE;
 
-  useEffect(() => {
-    const viewer = viewerRef.current;
-    if (!viewer) return;
-    viewer.scene.screenSpaceCameraController.enableCollisionDetection = !underground;
-    viewer.scene.globe.translucency.enabled = underground;
-    viewer.scene.globe.translucency.frontFaceAlpha = underground ? 0.4 : 1.0;
-  }, [underground]);
-
-  /* ================================================================ */
-  /*  Cesium World Terrain (Ion free tier — ~30 m global DEM)          */
-  /* ================================================================ */
-
-  useEffect(() => {
-    if (!hasIon) return;
-    let cancelled = false;
-    createWorldTerrainAsync({
-      requestWaterMask: true,
-      requestVertexNormals: true,
-    })
-      .then((tp) => {
-        if (!cancelled) setTerrainProvider(tp);
-      })
-      .catch((err) => {
-        console.warn('[CesiumViewer] World Terrain failed:', err);
-      });
-    return () => { cancelled = true; };
-  }, [hasIon]);
-
-  /* ================================================================ */
-  /*  Google Photorealistic 3D Tiles (Maps API free tier)              */
-  /* ================================================================ */
-
-  useEffect(() => {
-    if (!hasGoogle) {
-      setGoogle3DTilesUrl(null);
+    if (googleRef.current) {
+      googleRef.current.show = wantGoogle;
+      viewer.scene.globe.show = !wantGoogle;
       return;
     }
-    // Append the API key as a query parameter to the tileset root.json URL
-    setGoogle3DTilesUrl(`${GOOGLE_3D_TILES_URL}?key=${GOOGLE_MAPS_API_KEY}`);
-  }, [hasGoogle]);
-
-  /* ================================================================ */
-  /*  OSM 3D Buildings (Cesium Ion free-tier — optional)                */
-  /* ================================================================ */
-
-  useEffect(() => {
-    if (!layers.buildings) {
-      setOsmBuildings(null);
-      return;
-    }
-
-    // Only attempt if Ion token is set (free tier provides buildings)
-    if (!hasIon) {
+    if (!wantGoogle) {
+      viewer.scene.globe.show = true;
       return;
     }
 
     let cancelled = false;
-    setBuildingsLoading(true);
-    createOsmBuildingsAsync()
+    setGoogleStatus('loading');
+    createGooglePhotorealistic3DTileset(
+      { key: GOOGLE_MAPS_API_KEY },
+      { showCreditsOnScreen: true, maximumScreenSpaceError: 8 },
+    )
       .then((tileset) => {
-        if (!cancelled) setOsmBuildings(tileset);
+        if (cancelled || viewer.isDestroyed()) {
+          tileset.destroy();
+          return;
+        }
+        googleRef.current = tileset;
+        viewer.scene.primitives.add(tileset);
+        viewer.scene.globe.show = false;
+        setGoogleStatus('ready');
       })
       .catch((err) => {
-        console.warn('[CesiumViewer] OSM 3D buildings not available:', err);
-      })
-      .finally(() => {
-        if (!cancelled) setBuildingsLoading(false);
+        console.warn('[CesiumViewer] Google 3D Tiles unavailable (is the Map Tiles API enabled for this key?):', err);
+        if (!cancelled) {
+          setGoogleStatus('failed');
+          setSource('cesium');
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [layers.buildings]);
+  }, [ready, source]);
 
   /* ================================================================ */
-  /*  Measurement click handler                                        */
+  /*  Cesium OSM Buildings                                             */
   /* ================================================================ */
 
-  const handleLeftClick = useCallback(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (event: any) => {
-      if (!measureMode) return;
-      const viewer = viewerRef.current;
-      if (!viewer) return;
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!ready || !viewer || !HAS_ION) return;
 
-      const cartesian = viewer.camera.pickEllipsoid(
-        event.position,
-        viewer.scene.globe.ellipsoid,
-      );
-      if (!defined(cartesian) || !cartesian) return;
+    const want = source === 'cesium' && layers.buildings;
+    if (osmRef.current) {
+      osmRef.current.show = want;
+      return;
+    }
+    if (!want) return;
 
-      const carto = Cartographic.fromCartesian(cartesian);
-      const pt: MeasurePoint = {
-        cartesian,
+    let cancelled = false;
+    setBuildingsStatus('loading');
+    createOsmBuildingsAsync()
+      .then((tileset) => {
+        if (cancelled || viewer.isDestroyed()) {
+          tileset.destroy();
+          return;
+        }
+        osmRef.current = tileset;
+        viewer.scene.primitives.add(tileset);
+        setBuildingsStatus('ready');
+      })
+      .catch((err) => {
+        console.warn('[CesiumViewer] OSM Buildings failed:', err);
+        if (!cancelled) setBuildingsStatus('failed');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, source, layers.buildings]);
+
+  /* ================================================================ */
+  /*  Region outline + camera                                          */
+  /* ================================================================ */
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!ready || !viewer) return;
+
+    if (regionEntityRef.current) {
+      viewer.entities.remove(regionEntityRef.current);
+      regionEntityRef.current = null;
+    }
+
+    if (selectedRegion) {
+      const { west: w, south: s, east: e, north: n } = selectedRegion;
+      regionEntityRef.current = viewer.entities.add({
+        polyline: {
+          positions: Cartesian3.fromDegreesArray([w, s, e, s, e, n, w, n, w, s]),
+          width: 3,
+          material: Color.fromCssColorString('#22c55e').withAlpha(0.95),
+          clampToGround: true,
+          classificationType: ClassificationType.BOTH,
+        },
+      });
+      flyToBBox(viewer, selectedRegion, regionStats?.maxElev ?? 0);
+    } else {
+      // No region yet: look at the 2D map's current view.
+      const mpp = (156543.03 * Math.cos((center[1] * Math.PI) / 180)) / 2 ** zoom;
+      const height = Math.max(2000, mpp * 900);
+      viewer.camera.flyTo({
+        destination: Cartesian3.fromDegrees(center[0], center[1], height),
+        duration: 1.5,
+      });
+    }
+    // Only re-run when the region changes; camera/stats are read at that moment.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, selectedRegion]);
+
+  /* ================================================================ */
+  /*  Exaggeration / underground                                       */
+  /* ================================================================ */
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!ready || !viewer) return;
+    viewer.scene.verticalExaggeration = verticalExaggeration;
+  }, [ready, verticalExaggeration]);
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!ready || !viewer) return;
+    viewer.scene.screenSpaceCameraController.enableCollisionDetection = !underground;
+    viewer.scene.globe.translucency.enabled = underground;
+    viewer.scene.globe.translucency.frontFaceAlpha = underground ? 0.45 : 1.0;
+  }, [ready, underground]);
+
+  /* ================================================================ */
+  /*  Input: click (measure / pick) and hover (coords)                 */
+  /* ================================================================ */
+
+  const clearHighlight = useCallback(() => {
+    const h = highlightRef.current;
+    if (h) {
+      try {
+        h.feature.color = h.color;
+      } catch {
+        /* feature may have been unloaded */
+      }
+      highlightRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!ready || !viewer) return;
+
+    const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
+
+    handler.setInputAction((e: ScreenSpaceEventHandler.PositionedEvent) => {
+      const v = viewerRef.current;
+      if (!v) return;
+      const position = pickWorldPosition(v, e.position);
+
+      if (measureModeRef.current) {
+        if (!position) return;
+        const carto = Cartographic.fromCartesian(position);
+        const pt: MeasurePoint = {
+          cartesian: position,
+          lon: CesiumMath.toDegrees(carto.longitude),
+          lat: CesiumMath.toDegrees(carto.latitude),
+          height: carto.height,
+        };
+        setMeasurePoints((prev) => (prev.length < 2 ? [...prev, pt] : [pt]));
+        return;
+      }
+
+      clearHighlight();
+      const picked = v.scene.pick(e.position);
+
+      if (picked instanceof Cesium3DTileFeature) {
+        highlightRef.current = { feature: picked, color: Color.clone(picked.color) };
+        picked.color = Color.fromCssColorString('#facc15');
+
+        const rows: [string, string][] = [];
+        for (const [key, label] of OSM_BUILDING_PROPS) {
+          const val = picked.getProperty(key);
+          if (val === undefined || val === null || val === '') continue;
+          rows.push([label, typeof val === 'number' ? val.toFixed(key.includes('Height') ? 1 : 0) : String(val)]);
+        }
+        const name = picked.getProperty('name');
+        setFeatureInfo({
+          kind: 'building',
+          title: name ? String(name) : 'Building',
+          rows,
+        });
+        return;
+      }
+
+      if (position) {
+        const carto = Cartographic.fromCartesian(position);
+        setFeatureInfo({
+          kind: 'point',
+          title: 'Point',
+          rows: [
+            ['Latitude', `${CesiumMath.toDegrees(carto.latitude).toFixed(6)}°`],
+            ['Longitude', `${CesiumMath.toDegrees(carto.longitude).toFixed(6)}°`],
+            ['Height', `${carto.height.toFixed(1)} m`],
+          ],
+        });
+      } else {
+        setFeatureInfo(null);
+      }
+    }, ScreenSpaceEventType.LEFT_CLICK);
+
+    handler.setInputAction((e: ScreenSpaceEventHandler.MotionEvent) => {
+      const now = performance.now();
+      if (now - lastMoveRef.current < 60) return;
+      lastMoveRef.current = now;
+      const v = viewerRef.current;
+      if (!v) return;
+      const p = v.camera.pickEllipsoid(e.endPosition, v.scene.globe.ellipsoid);
+      if (!p) {
+        setCursorCoord(null);
+        return;
+      }
+      const carto = Cartographic.fromCartesian(p);
+      setCursorCoord({
         lon: CesiumMath.toDegrees(carto.longitude),
         lat: CesiumMath.toDegrees(carto.latitude),
-        height: carto.height,
-      };
-
-      setMeasurePoints((prev) => {
-        if (prev.length < 2) return [...prev, pt];
-        return [pt]; // reset
       });
-    },
-    [measureMode],
-  );
+    }, ScreenSpaceEventType.MOUSE_MOVE);
 
-  /* ---- Derived measurement ---- */
-  const distance = useMemo(() => {
-    if (measurePoints.length < 2) return null;
-    const [a, b] = measurePoints;
-    return geodesicDistance(a.lat, a.lon, b.lat, b.lon);
-  }, [measurePoints]);
+    return () => {
+      handler.destroy();
+      setCursorCoord(null);
+    };
+  }, [ready, clearHighlight, setCursorCoord]);
 
-  /* ---- Measurement entities ---- */
-  const measureEntities = useMemo(() => {
-    const entities: React.ReactElement[] = [];
+  /* ================================================================ */
+  /*  Measurement entities                                             */
+  /* ================================================================ */
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!ready || !viewer) return;
+
+    for (const ent of measureEntitiesRef.current) viewer.entities.remove(ent);
+    measureEntitiesRef.current = [];
 
     measurePoints.forEach((pt, i) => {
-      entities.push(
-        <Entity
-          key={`mpt-${i}`}
-          position={pt.cartesian}
-          point={{ pixelSize: 10, color: i === 0 ? Color.RED : Color.LIME }}
-          label={{
-            text: `${pt.lat.toFixed(5)}°, ${pt.lon.toFixed(5)}°`,
-            font: '12px sans-serif',
+      measureEntitiesRef.current.push(
+        viewer.entities.add({
+          position: pt.cartesian,
+          point: {
+            pixelSize: 10,
+            color: i === 0 ? Color.fromCssColorString('#ef4444') : Color.fromCssColorString('#22c55e'),
+            outlineColor: Color.WHITE,
+            outlineWidth: 2,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+          label: {
+            text: `${pt.lat.toFixed(5)}°, ${pt.lon.toFixed(5)}°\n${pt.height.toFixed(0)} m`,
+            font: '12px system-ui',
             style: LabelStyle.FILL_AND_OUTLINE,
             outlineWidth: 2,
             verticalOrigin: VerticalOrigin.BOTTOM,
-            pixelOffset: new Cartesian3(0, -14, 0) as unknown as import('cesium').Cartesian2,
+            pixelOffset: new Cartesian2(0, -14),
             fillColor: Color.WHITE,
             outlineColor: Color.BLACK,
-          }}
-        />,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        }),
       );
     });
 
-    if (measurePoints.length === 2 && distance != null) {
+    if (measurePoints.length === 2) {
       const [a, b] = measurePoints;
-      const midpoint = Cartesian3.midpoint(
-        a.cartesian,
-        b.cartesian,
-        new Cartesian3(),
-      );
-
-      entities.push(
-        <Entity
-          key="mline"
-          polyline={{
+      const distance = geodesicDistance(a.lat, a.lon, b.lat, b.lon);
+      measureEntitiesRef.current.push(
+        viewer.entities.add({
+          polyline: {
             positions: [a.cartesian, b.cartesian],
-            width: 3,
+            width: 4,
             material: new PolylineGlowMaterialProperty({
-              glowPower: 0.2,
-              color: Color.YELLOW,
+              glowPower: 0.25,
+              color: Color.fromCssColorString('#facc15'),
             }),
             clampToGround: true,
-          }}
-        />,
-      );
-
-      entities.push(
-        <Entity
-          key="mlabel"
-          position={midpoint}
-          label={{
-            text: fmtDist(distance),
-            font: 'bold 14px sans-serif',
+            classificationType: ClassificationType.BOTH,
+          },
+        }),
+        viewer.entities.add({
+          position: Cartesian3.midpoint(a.cartesian, b.cartesian, new Cartesian3()),
+          label: {
+            text: `${fmtDist(distance)} · Δh ${(b.height - a.height).toFixed(0)} m`,
+            font: 'bold 14px system-ui',
             style: LabelStyle.FILL_AND_OUTLINE,
             outlineWidth: 2,
             verticalOrigin: VerticalOrigin.BOTTOM,
-            pixelOffset: new Cartesian3(0, -8, 0) as unknown as import('cesium').Cartesian2,
-            fillColor: Color.YELLOW,
+            pixelOffset: new Cartesian2(0, -10),
+            fillColor: Color.fromCssColorString('#facc15'),
             outlineColor: Color.BLACK,
-          }}
-        />,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        }),
       );
     }
+  }, [ready, measurePoints]);
 
-    return entities;
-  }, [measurePoints, distance]);
-
-  /* ================================================================ */
-  /*  Viewer init callback                                             */
-  /* ================================================================ */
-
-  const handleViewerReady = useCallback(
-    (viewer: CesiumViewerClass) => {
-      viewerRef.current = viewer;
-
-      // Apply initial settings
-      viewer.scene.verticalExaggeration = verticalExaggeration;
-      viewer.scene.globe.depthTestAgainstTerrain = true;
-      viewer.scene.screenSpaceCameraController.enableCollisionDetection =
-        !underground;
-
-      // Remove default imagery layers (we add our own OSM layer)
-      viewer.imageryLayers.removeAll();
-    },
-    // Only run on mount — stable deps
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
-  );
+  const distance =
+    measurePoints.length === 2
+      ? geodesicDistance(measurePoints[0].lat, measurePoints[0].lon, measurePoints[1].lat, measurePoints[1].lon)
+      : null;
 
   /* ================================================================ */
   /*  Render                                                           */
   /* ================================================================ */
 
+  const googleActive = source === 'google' && googleStatus === 'ready';
+
   return (
     <div className="relative h-full w-full bg-black">
-      <CesiumViewerComponent
-        full
-        ref={(e) => {
-          if (e?.cesiumElement) handleViewerReady(e.cesiumElement);
-        }}
-        terrainProvider={terrainProvider}
-        // Disable UI chrome we don't need
-        animation={false}
-        timeline={false}
-        baseLayerPicker={false}
-        geocoder={false}
-        homeButton={false}
-        navigationHelpButton={false}
-        sceneModePicker={false}
-        fullscreenButton={false}
-        selectionIndicator={false}
-        infoBox={false}
-        creditContainer={document.createElement('div')} // hide credits overlay (shown in footer)
-      >
-        {/* OSM raster tiles */}
-        <ImageryLayer imageryProvider={osmImageryProvider} />
+      <div ref={containerRef} className="absolute inset-0" />
 
-        <Scene />
-        <Globe
-          depthTestAgainstTerrain
-          enableLighting={false}
-        />
-
-        {/* Fly to region */}
-        {flyDestination && (
-          <CameraFlyTo
-            destination={flyDestination}
-            duration={2}
-            once
-            onComplete={() => setFlyDestination(null)}
-          />
-        )}
-
-        {/* Google Photorealistic 3D Tiles (if API key provided) */}
-        {google3DTilesUrl && (
-          <Cesium3DTileset
-            url={google3DTilesUrl}
-            showCreditsOnScreen
-          />
-        )}
-
-        {/* OSM 3D Buildings */}
-        {osmBuildings && layers.buildings && !google3DTilesUrl && (
-          <Cesium3DTileset url={osmBuildings.resource} />
-        )}
-
-        {/* Measurement entities */}
-        {measureEntities}
-
-        {/* Measurement click handler */}
-        <ScreenSpaceEventHandler>
-          {/* Resium ScreenSpaceEvent is not a component — we'll handle via ref */}
-        </ScreenSpaceEventHandler>
-      </CesiumViewerComponent>
-
-      {/* ---- Imperative event handler via useEffect ---- */}
-      <MeasureEventBridge
-        viewerRef={viewerRef}
-        onLeftClick={handleLeftClick}
-        measureMode={measureMode}
-      />
-
-      {/* ---------- Floating controls ---------- */}
-
-      {/* Top-left: Back + Measure */}
+      {/* ---------- Top-left: back, measure, clear ---------- */}
       <div className="absolute left-3 top-3 flex flex-col gap-2">
-        <button
-          onClick={() => set3DActive(false)}
-          className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg bg-white/90 text-zinc-600 shadow-lg backdrop-blur-md transition-colors hover:bg-zinc-100 dark:bg-zinc-800/90 dark:text-zinc-300 dark:hover:bg-zinc-700"
-          title="Back to 2D map"
-        >
+        <IconBtn title="Back to 2D map" onClick={() => set3DActive(false)}>
           <X size={16} />
-        </button>
-
-        <button
+        </IconBtn>
+        <IconBtn
+          title="Measure distance"
+          active={measureMode}
           onClick={() => {
             setMeasureMode((m) => !m);
-            if (measureMode) {
-              setMeasurePoints([]);
-            }
+            if (measureMode) setMeasurePoints([]);
+            setFeatureInfo(null);
+            clearHighlight();
           }}
-          className={`flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg shadow-lg backdrop-blur-md transition-colors ${
-            measureMode
-              ? 'bg-yellow-500 text-white'
-              : 'bg-white/90 text-zinc-600 hover:bg-zinc-100 dark:bg-zinc-800/90 dark:text-zinc-300 dark:hover:bg-zinc-700'
-          }`}
-          title="Measure distance"
         >
           <Ruler size={16} />
-        </button>
-
+        </IconBtn>
         {measurePoints.length > 0 && (
-          <button
-            onClick={() => setMeasurePoints([])}
-            className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg bg-white/90 text-zinc-600 shadow-lg backdrop-blur-md transition-colors hover:bg-zinc-100 dark:bg-zinc-800/90 dark:text-zinc-300 dark:hover:bg-zinc-700"
-            title="Clear measurements"
-          >
+          <IconBtn title="Clear measurements" onClick={() => setMeasurePoints([])}>
             <Trash2 size={16} />
-          </button>
+          </IconBtn>
         )}
       </div>
 
-      {/* Measurement info banner */}
+      {/* ---------- Top-center: source switch ---------- */}
+      <div className="absolute left-1/2 top-3 flex -translate-x-1/2 rounded-lg bg-zinc-900/90 p-0.5 shadow-lg backdrop-blur-md">
+        <SourceBtn
+          Icon={Box}
+          label="Photorealistic"
+          active={source === 'google'}
+          disabled={!HAS_GOOGLE || googleStatus === 'failed'}
+          title={
+            !HAS_GOOGLE
+              ? 'Set NEXT_PUBLIC_GOOGLE_MAPS_API_KEY to enable Google Photorealistic 3D Tiles'
+              : googleStatus === 'failed'
+                ? 'Google 3D Tiles failed to load — enable the Map Tiles API for this key'
+                : 'Google Photorealistic 3D Tiles'
+          }
+          onClick={() => setSource('google')}
+        />
+        <SourceBtn
+          Icon={Building2}
+          label="Terrain + Buildings"
+          active={source === 'cesium'}
+          title="Cesium World Terrain + OSM Buildings over Esri imagery"
+          onClick={() => setSource('cesium')}
+        />
+      </div>
+
+      {/* ---------- Loading ---------- */}
+      {(googleStatus === 'loading' || terrainStatus === 'loading' || buildingsStatus === 'loading') && (
+        <div className="pointer-events-none absolute left-1/2 top-14 flex -translate-x-1/2 items-center gap-2 rounded-full bg-zinc-900/90 px-4 py-1.5 text-xs font-medium text-zinc-200 shadow-lg backdrop-blur-md">
+          <Loader2 size={14} className="animate-spin text-blue-400" />
+          {googleStatus === 'loading' && 'Loading photorealistic tiles… '}
+          {terrainStatus === 'loading' && 'Loading world terrain… '}
+          {buildingsStatus === 'loading' && 'Loading 3D buildings…'}
+        </div>
+      )}
+
+      {/* ---------- Feature card ---------- */}
+      {featureInfo && !measureMode && (
+        <div className="absolute right-3 top-3 w-64 rounded-xl bg-zinc-900/95 p-3 text-zinc-200 shadow-lg backdrop-blur-md">
+          <div className="mb-2 flex items-start justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              {featureInfo.kind === 'building' ? (
+                <Building2 size={14} className="text-yellow-400" />
+              ) : (
+                <MapPin size={14} className="text-blue-400" />
+              )}
+              <span className="line-clamp-2">{featureInfo.title}</span>
+            </div>
+            <button
+              onClick={() => {
+                setFeatureInfo(null);
+                clearHighlight();
+              }}
+              className="cursor-pointer rounded p-0.5 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200"
+              title="Close"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          {featureInfo.rows.length > 0 ? (
+            <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[11px]">
+              {featureInfo.rows.map(([k, v]) => (
+                <div key={k} className="contents">
+                  <span className="text-zinc-500">{k}</span>
+                  <span className="truncate text-right tabular-nums text-zinc-200" title={v}>
+                    {v}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] text-zinc-500">No metadata for this feature.</p>
+          )}
+          {featureInfo.kind === 'point' && googleActive && (
+            <p className="mt-2 text-[10px] leading-snug text-zinc-500">
+              Photorealistic tiles carry no per-building metadata. Switch to “Terrain + Buildings” to
+              inspect OSM attributes.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ---------- Measurement banner ---------- */}
       {measureMode && (
-        <div className="pointer-events-none absolute bottom-6 left-1/2 -translate-x-1/2 select-none rounded-full bg-yellow-500/90 px-4 py-1.5 text-sm font-medium text-white shadow-lg backdrop-blur-md">
-          {measurePoints.length === 0 && 'Click globe to place first point'}
-          {measurePoints.length === 1 && 'Click globe to place second point'}
+        <div className="pointer-events-none absolute bottom-8 left-1/2 -translate-x-1/2 select-none rounded-full bg-yellow-500/90 px-4 py-1.5 text-sm font-medium text-white shadow-lg backdrop-blur-md">
+          {measurePoints.length === 0 && 'Click the scene to place first point'}
+          {measurePoints.length === 1 && 'Click the scene to place second point'}
           {measurePoints.length === 2 && distance != null && (
             <>
-              Distance: <b>{fmtDist(distance)}</b>
+              Distance: <b>{fmtDist(distance)}</b> · Δh:{' '}
+              <b>{(measurePoints[1].height - measurePoints[0].height).toFixed(0)} m</b>
             </>
           )}
         </div>
       )}
 
-      {/* Buildings loading badge */}
-      {buildingsLoading && (
-        <div className="absolute right-3 top-3 flex items-center gap-2 rounded-lg bg-white/90 px-3 py-2 text-xs font-medium text-zinc-600 shadow-lg backdrop-blur-md dark:bg-zinc-800/90 dark:text-zinc-300">
-          <Loader2 size={14} className="animate-spin" />
-          Loading 3D buildings…
-        </div>
-      )}
-
-      {/* Data source indicators */}
-      <div className="absolute bottom-3 right-3 flex flex-col gap-1">
-        {hasIon && (
-          <div className="flex items-center gap-1.5 rounded bg-emerald-600/80 px-2 py-1 text-[10px] font-medium text-white backdrop-blur-sm">
-            <Globe2 size={10} /> Cesium World Terrain
-          </div>
+      {/* ---------- Source badges ---------- */}
+      <div className="pointer-events-none absolute bottom-8 right-3 flex flex-col items-end gap-1">
+        {googleActive && <Badge color="bg-blue-600/85" Icon={Box} label="Google Photorealistic 3D Tiles" />}
+        {!googleActive && terrainStatus === 'ready' && (
+          <Badge color="bg-emerald-600/85" Icon={Globe2} label="Cesium World Terrain" />
         )}
-        {google3DTilesUrl && (
-          <div className="flex items-center gap-1.5 rounded bg-blue-600/80 px-2 py-1 text-[10px] font-medium text-white backdrop-blur-sm">
-            <Box size={10} /> Google 3D Tiles
-          </div>
+        {!googleActive && buildingsStatus === 'ready' && layers.buildings && (
+          <Badge color="bg-orange-600/85" Icon={Building2} label="Cesium OSM Buildings" />
         )}
-        {osmBuildings && !google3DTilesUrl && (
-          <div className="flex items-center gap-1.5 rounded bg-orange-600/80 px-2 py-1 text-[10px] font-medium text-white backdrop-blur-sm">
-            <Box size={10} /> OSM 3D Buildings
-          </div>
+        {!HAS_ION && !googleActive && (
+          <Badge color="bg-zinc-700/90" Icon={Globe2} label="Add a Cesium Ion token for terrain & buildings" />
         )}
       </div>
     </div>
@@ -516,36 +712,79 @@ export default function CesiumViewer() {
 }
 
 /* ================================================================== */
-/*  Imperative Cesium event bridge                                     */
-/*  (Resium's ScreenSpaceEvent doesn't cover all use-cases cleanly)    */
+/*  Small UI bits                                                      */
 /* ================================================================== */
 
-function MeasureEventBridge({
-  viewerRef,
-  onLeftClick,
-  measureMode,
+function IconBtn({
+  children,
+  title,
+  active,
+  onClick,
 }: {
-  viewerRef: React.RefObject<CesiumViewerClass | null>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  onLeftClick: (event: any) => void;
-  measureMode: boolean;
+  children: React.ReactNode;
+  title: string;
+  active?: boolean;
+  onClick: () => void;
 }) {
-  useEffect(() => {
-    const viewer = viewerRef.current;
-    if (!viewer || !measureMode) return;
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={`flex h-9 w-9 cursor-pointer items-center justify-center rounded-lg shadow-lg backdrop-blur-md transition-colors ${
+        active ? 'bg-yellow-500 text-white' : 'bg-zinc-900/90 text-zinc-300 hover:bg-zinc-800'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
 
-    const handler = new (
-      // Access from the Cesium import
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require('cesium').ScreenSpaceEventHandler
-    )(viewer.scene.canvas) as import('cesium').ScreenSpaceEventHandler;
+function SourceBtn({
+  Icon,
+  label,
+  active,
+  disabled,
+  title,
+  onClick,
+}: {
+  Icon: React.ComponentType<{ size?: number }>;
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+        active
+          ? 'bg-blue-600 text-white'
+          : disabled
+            ? 'cursor-not-allowed text-zinc-600'
+            : 'cursor-pointer text-zinc-300 hover:bg-zinc-800'
+      }`}
+    >
+      <Icon size={13} />
+      {label}
+    </button>
+  );
+}
 
-    handler.setInputAction(onLeftClick, ScreenSpaceEventType.LEFT_CLICK);
-
-    return () => {
-      handler.destroy();
-    };
-  }, [viewerRef, onLeftClick, measureMode]);
-
-  return null;
+function Badge({
+  color,
+  Icon,
+  label,
+}: {
+  color: string;
+  Icon: React.ComponentType<{ size?: number }>;
+  label: string;
+}) {
+  return (
+    <div className={`flex items-center gap-1.5 rounded px-2 py-1 text-[10px] font-medium text-white backdrop-blur-sm ${color}`}>
+      <Icon size={10} /> {label}
+    </div>
+  );
 }
