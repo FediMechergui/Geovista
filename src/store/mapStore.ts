@@ -92,8 +92,12 @@ export const useMapStore = create<MapState>((set) => ({
   setZoom: (zoom) => set({ zoom }),
   setBasemap: (basemap) => set({ basemap }),
   setCursorCoord: (c) => set({ cursorCoord: c }),
+  // Also update center/zoom so a freshly mounted map (e.g. when the split
+  // pane opens) starts at the target even if the animation never runs.
   requestFlyTo: (center, zoom) =>
     set((s) => ({
+      center,
+      zoom,
       flyTo: { center, zoom, nonce: (s.flyTo?.nonce ?? 0) + 1 },
     })),
 

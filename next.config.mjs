@@ -14,8 +14,16 @@ const projectRoot = path.dirname(fileURLToPath(import.meta.url));
  * @type {import('next').NextConfig}
  */
 const nextConfig = {
-  // Pin the workspace root so Turbopack never picks a parent checkout's lockfile.
-  turbopack: { root: projectRoot },
+  turbopack: {
+    // Pin the workspace root so Turbopack never picks a parent checkout's lockfile.
+    root: projectRoot,
+    resolveAlias: {
+      // Cesium's Gaussian-splat decoder inlines a wasm binary as a JS string,
+      // which the minifier mangles into invalid code. We never load splats,
+      // so replace it with a stub (see src/stubs/spz-loader.ts).
+      '@spz-loader/core': './src/stubs/spz-loader.ts',
+    },
+  },
 };
 
 export default nextConfig;
