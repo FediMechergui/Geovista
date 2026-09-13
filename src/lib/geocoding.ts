@@ -32,10 +32,14 @@ interface NominatimReverseRow {
   error?: string;
 }
 
-/** Largest region we build a twin for (deg²). ~0.04 ≈ 20 km × 20 km at mid latitudes. */
-const MAX_TWIN_AREA_DEG2 = 0.04;
-/** Half-size of the box used for oversized results (countries, big cities). */
-const DEFAULT_HALF_SPAN_DEG = 0.02;
+/**
+ * Largest region we build a twin for automatically (deg²). ~0.012 ≈ 10 km ×
+ * 10 km at mid latitudes — enough for a city centre with full building
+ * detail. Users can always draw a larger box by hand.
+ */
+const MAX_TWIN_AREA_DEG2 = 0.012;
+/** Half-size of the box used for oversized results (countries, big cities): ~5.5 km. */
+const DEFAULT_HALF_SPAN_DEG = 0.025;
 /** Half-size for point features so a POI still gets a meaningful neighbourhood. */
 const MIN_HALF_SPAN_DEG = 0.006;
 

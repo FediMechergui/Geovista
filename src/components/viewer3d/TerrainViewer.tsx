@@ -554,7 +554,7 @@ export default function TerrainViewer() {
   return (
     <div className="relative h-full w-full bg-zinc-950">
       <Canvas
-        shadows
+        shadows={{ type: THREE.PCFShadowMap }}
         dpr={[1, 2]}
         gl={{
           antialias: true,

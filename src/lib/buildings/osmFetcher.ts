@@ -1,41 +1,34 @@
 /**
- * OpenStreetMap building fetcher via the Overpass API.
+ * OpenStreetMap building fetcher via the Overpass API (through the
+ * same-origin proxy at /api/proxy/overpass).
  *
- * Free, no API key needed. Be respectful of rate limits:
- *   ~2 req/sec, 10k req/day, large queries may be throttled server-side.
- *
- * The Overpass query returns building ways + the referenced nodes; we
- * cross-reference them to build polygon footprints, then extract height
- * hints from `height`, `building:height`, `building:levels`, and
- * `building` type tags.
+ * Uses `out geom` so each way carries its own coordinates — no separate
+ * node lookup — and caps the number of ways so a large region cannot
+ * return hundreds of thousands of footprints.
  */
 
 import type { BuildingData } from '@/types/buildings';
-import type { BBox } from "@/types/geo";
+import type { BBox } from '@/types/geo';
 
 interface OverpassElement {
   type: string;
   id: number;
-  lat?: number;
-  lon?: number;
-  nodes?: number[];
   tags?: Record<string, string>;
+  geometry?: Array<{ lat: number; lon: number }>;
 }
 
 interface OverpassResponse {
   elements: OverpassElement[];
 }
 
-/**
- * Soft cap on bbox area (in square degrees). Above this, we warn but
- * still issue the query — the caller can decide to split.
- * ~0.01 deg² is roughly a 1 km × 1 km patch.
- */
+/** Hard cap on footprints per request (keeps extrusion + memory bounded). */
+export const MAX_BUILDINGS = 40_000;
+
+/** Above this bbox area (deg², ~0.01 ≈ 1 km²) we warn — Overpass may be slow. */
 const LARGE_AREA_THRESHOLD_DEG2 = 0.01;
 
 /**
  * Fetch OSM building footprints within a bounding box.
- *
  * Throws on network / HTTP failures. Returns an empty array if the
  * area has no buildings mapped.
  */
@@ -45,53 +38,33 @@ export async function fetchBuildings(bbox: BBox): Promise<BuildingData[]> {
   const area = (north - south) * (east - west);
   if (area > LARGE_AREA_THRESHOLD_DEG2) {
     console.warn(
-      `[osmFetcher] Large area requested (${area.toFixed(4)} deg²). ` +
-        `Consider splitting into smaller tiles to avoid Overpass timeouts.`,
+      `[osmFetcher] Large area requested (${area.toFixed(4)} deg²); capped at ${MAX_BUILDINGS} buildings.`,
     );
   }
 
   const query = `
-    [out:json][timeout:30];
-    (
-      way["building"](${south},${west},${north},${east});
-      relation["building"](${south},${west},${north},${east});
-    );
-    out body;
-    >;
-    out skel qt;
+    [out:json][timeout:60];
+    way["building"](${south},${west},${north},${east});
+    out geom ${MAX_BUILDINGS};
   `;
 
-  const response = await fetch("/api/proxy/overpass", {
-    method: "POST",
+  const response = await fetch('/api/proxy/overpass', {
+    method: 'POST',
     body: `data=${encodeURIComponent(query)}`,
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
   });
 
   if (!response.ok) {
-    throw new Error(
-      `Overpass API error: ${response.status} ${response.statusText}`,
-    );
+    throw new Error(`Overpass API error: ${response.status} ${response.statusText}`);
   }
 
   const data = (await response.json()) as OverpassResponse;
 
-  // Index nodes by id → [lon, lat] for fast lookup during way assembly.
-  const nodeIndex = new Map<number, [number, number]>();
-  for (const el of data.elements) {
-    if (el.type === 'node' && el.lon !== undefined && el.lat !== undefined) {
-      nodeIndex.set(el.id, [el.lon, el.lat]);
-    }
-  }
-
   const buildings: BuildingData[] = [];
   for (const el of data.elements) {
-    if (el.type !== 'way' || !el.tags?.building || !el.nodes) continue;
+    if (el.type !== 'way' || !el.tags?.building || !el.geometry) continue;
 
-    const coords = el.nodes
-      .map((nodeId) => nodeIndex.get(nodeId))
-      .filter((c): c is [number, number] => c !== undefined);
-
-    // A polygon needs at least 3 distinct vertices.
+    const coords: Array<[number, number]> = el.geometry.map((p) => [p.lon, p.lat]);
     if (coords.length < 3) continue;
 
     const heightStr = el.tags['height'] ?? el.tags['building:height'];
@@ -116,8 +89,6 @@ export async function fetchBuildings(bbox: BBox): Promise<BuildingData[]> {
 /**
  * Default heights (meters) for common OSM `building=*` types when no
  * explicit `height` or `building:levels` tag is present.
- *
- * These are reasonable global averages, not region-specific.
  */
 const BUILDING_HEIGHT_DEFAULTS: Record<string, number> = {
   house: 8,
@@ -137,9 +108,11 @@ const BUILDING_HEIGHT_DEFAULTS: Record<string, number> = {
   cathedral: 40,
   mosque: 20,
   temple: 15,
+  hotel: 25,
   garage: 4,
   shed: 3,
   hut: 3,
+  roof: 4,
   yes: 10, // generic fallback
 };
 
@@ -149,9 +122,7 @@ const METERS_PER_FLOOR = 3.2;
  * Best-effort estimate of a building's height in meters.
  * Priority: explicit `height` → `levels * 3.2` → type default → 10 m.
  */
-export function estimateBuildingHeight(
-  props: BuildingData['properties'],
-): number {
+export function estimateBuildingHeight(props: BuildingData['properties']): number {
   if (props.height && !Number.isNaN(props.height)) {
     return props.height;
   }
