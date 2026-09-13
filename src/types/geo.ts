@@ -17,17 +17,56 @@ export interface ElevationGrid {
   data: Float32Array;
   bbox: BBox;
   noDataValue: number;
+  /** Approximate ground resolution in meters per pixel. */
   resolution: number;
+  /** Web-Mercator tile range the grid was stitched from (when tile-based). */
+  tileRange?: TileRange;
 }
 
-export type SelectionMode = 'bbox' | 'polygon' | 'circle' | null;
+/** Inclusive XYZ tile range at a given zoom. */
+export interface TileRange {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  zoom: number;
+}
+
+export type SelectionMode = 'bbox' | null;
 export type Basemap = 'osm' | 'satellite' | 'terrain' | 'dark';
 
+/** Which 3D engine renders the selected place. */
+export type ViewerMode = 'globe' | 'terrain';
+
+/** Surface coloring for the analytical terrain viewer. */
+export type TerrainTexture = 'satellite' | 'landuse' | 'hypsometric';
+
 export interface LayerVisibility {
-  terrain: boolean;
   buildings: boolean;
   geology: boolean;
-  bathymetry: boolean;
-  satellite: boolean;
-  contours: boolean;
+  water: boolean;
+}
+
+/** Reverse-geocoded identity of the selected region. */
+export interface PlaceInfo {
+  name: string;
+  displayName: string;
+  category?: string;
+}
+
+/** Derived statistics for the selected region (filled by the terrain viewer). */
+export interface RegionStats {
+  areaKm2: number;
+  minElev: number;
+  maxElev: number;
+  meanElev: number;
+  demResolutionM: number;
+  buildingCount: number;
+}
+
+/** One-shot camera request for the 2D map (nonce forces re-trigger). */
+export interface FlyToRequest {
+  center: [number, number];
+  zoom: number;
+  nonce: number;
 }

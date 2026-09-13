@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Make `dark:` variants follow the `.dark` class set on <html> (Tailwind v4 defaults to prefers-color-scheme). */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* Cesium widget styles */
 @import "cesium/Build/Cesium/Widgets/widgets.css";
 /* MapLibre styles */
@@ -40,8 +43,16 @@ body {
 /*  Cesium dark-theme overrides                                        */
 /* ================================================================== */
 
+/* Credits must stay visible (Google 3D Tiles ToS) — keep them small and unobtrusive. */
 .cesium-viewer .cesium-widget-credits {
-  display: none !important;
+  font-size: 10px !important;
+  opacity: 0.85;
+  padding: 2px 6px !important;
+  background: rgba(24, 24, 27, 0.55) !important;
+  border-radius: 4px;
+}
+.cesium-viewer .cesium-credit-lightbox-overlay {
+  z-index: 60;
 }
 .cesium-viewer .cesium-toolbar-button,
 .cesium-viewer .cesium-baseLayerPicker-dropDown,

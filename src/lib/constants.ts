@@ -1,55 +1,33 @@
-export const TILE_URLS = {
-  osm: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-  terrain:
-    "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png",
-  /** MapTiler terrain-RGB — higher quality than Terrarium at zoom 12+. Free tier: 100k req/month. */
-  terrainRGB: "https://api.maptiler.com/tiles/terrain-rgb-v2/{z}/{x}/{y}.webp",
-  stamen: "https://tiles.stadiamaps.com/tiles/stamen_terrain/{z}/{x}/{y}.png",
-  /** Satellite imagery — for texture draping on terrain. */
-  satellite:
-    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-} as const;
+/**
+ * Public configuration. Secrets live in `.env.local` (see `.env.example`);
+ * `NEXT_PUBLIC_*` values are inlined into the client bundle at build time.
+ */
 
-/** Google Photorealistic 3D Tiles endpoint (requires NEXT_PUBLIC_GOOGLE_MAPS_API_KEY). */
+/** Cesium Ion token — World Terrain + OSM Buildings in the Globe view. */
+export const CESIUM_ION_TOKEN = process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN ?? '';
+
+/** Google Maps Platform key with the Map Tiles API enabled — Photorealistic 3D Tiles. */
+export const GOOGLE_MAPS_API_KEY =
+  process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? '';
+
+/** Google Photorealistic 3D Tiles root tileset. */
 export const GOOGLE_3D_TILES_URL =
   'https://tile.googleapis.com/v1/3dtiles/root.json';
 
-/** Cesium Ion access token (free tier — OSM Buildings + World Terrain). */
-export const CESIUM_ION_TOKEN =
-  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI4YjM3ODFkZi0zMWUzLTQ1MjgtYTRjZi05N2VjODRlYzQ0N2YiLCJpZCI6NDE4NjEwLCJpYXQiOjE3NzYyNjAyMjB9.AWrk6bbHop9SQiMPotjFXW5vEh7lwFcwzIcPHQEonOw';
+/** Where the Cesium static assets (Workers, Assets, ThirdParty, Widgets) are served. */
+export const CESIUM_BASE_URL = '/cesium';
 
-/** Google Maps API key for Photorealistic 3D Tiles (free tier: 100k loads/month). */
-export const GOOGLE_MAPS_API_KEY = 'AIzaSyBhjXgPkY3W-E6fV-qkgFf0KnkohsI2MsA';
+export const TILE_URLS = {
+  osm: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  /** AWS Terrain Tiles — Terrarium-encoded elevation, free, global, up to z15. */
+  terrain:
+    'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png',
+  /** Esri World Imagery — free satellite/aerial tiles (attribution required). */
+  satellite:
+    'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+} as const;
 
-/** MapTiler API key (free tier: 100k req/month — terrain-rgb, satellite). */
-export const MAPTILER_API_KEY = 'aosV7l6Uy3wSPBEbvSw7';
-
-/** Overture Maps API key. */
-export const OVERTURE_API_KEY = 'live_NPk1P5NH6WbbW7nCce0X4pH6dpg9JFMu1pk1yXcFXrMmfVAFRibUY07O9Y1uTNZ5';
-
-export const MAPLIBRE_STYLE = {
-  version: 8 as const,
-  sources: {
-    osm: {
-      type: 'raster' as const,
-      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-      tileSize: 256,
-      attribution: '© OpenStreetMap contributors',
-    },
-  },
-  layers: [
-    {
-      id: 'osm-tiles',
-      type: 'raster' as const,
-      source: 'osm',
-      minzoom: 0,
-      maxzoom: 19,
-    },
-  ],
-};
-
-export const OVERPASS_API = 'https://overpass-api.de/api/interpreter';
-export const MACROSTRAT_API = 'https://macrostrat.org/api/v2';
+export const NOMINATIM_API = 'https://nominatim.openstreetmap.org';
 
 export const HYPSOMETRIC_STOPS = [
   { elev: -11000, color: '#000033' },

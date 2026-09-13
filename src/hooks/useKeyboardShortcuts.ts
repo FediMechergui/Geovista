@@ -7,24 +7,30 @@ import { useMapStore } from "@/store/mapStore";
  * Global keyboard shortcuts.
  *
  *   Escape  — exit selection mode / deselect region
- *   Space   — toggle 3D view (when region is selected)
- *   1       — switch to 2D
- *   2       — switch to 3D
- *   B       — cycle basemap
+ *   Space   — toggle 2D ↔ 3D
+ *   1       — 2D map
+ *   2       — 3D view (current mode)
+ *   G       — switch Globe ↔ Terrain
+ *   B       — cycle 2D basemap
  *   ?       — toggle help panel
- *
- * @param onToggleHelp callback to open/close the help panel
  */
 export function useKeyboardShortcuts(onToggleHelp: () => void) {
   useEffect(() => {
     function handler(e: KeyboardEvent) {
-      // Ignore when user is typing in an input / textarea / contenteditable
-      const tag = (e.target as HTMLElement).tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        tag === "BUTTON" ||
+        target?.isContentEditable
+      ) {
         return;
       }
 
       const store = useMapStore.getState();
+      const can3D = store.viewerMode === "globe" || !!store.selectedRegion;
 
       switch (e.key) {
         case "Escape":
@@ -33,15 +39,14 @@ export function useKeyboardShortcuts(onToggleHelp: () => void) {
             store.setSelectionMode(null);
           } else if (store.selectedRegion) {
             store.setSelectedRegion(null);
-            store.set3DActive(false);
+            if (store.viewerMode === "terrain") store.set3DActive(false);
           }
           break;
 
-        case " ": // Space
+        case " ":
           e.preventDefault();
-          if (store.selectedRegion) {
-            store.set3DActive(!store.is3DActive);
-          }
+          if (store.is3DActive) store.set3DActive(false);
+          else if (can3D) store.set3DActive(true);
           break;
 
         case "1":
@@ -51,7 +56,17 @@ export function useKeyboardShortcuts(onToggleHelp: () => void) {
 
         case "2":
           e.preventDefault();
-          if (store.selectedRegion) store.set3DActive(true);
+          if (can3D) store.set3DActive(true);
+          break;
+
+        case "g":
+        case "G":
+          e.preventDefault();
+          if (store.viewerMode === "globe") {
+            if (store.selectedRegion) store.setViewerMode("terrain");
+          } else {
+            store.setViewerMode("globe");
+          }
           break;
 
         case "b":

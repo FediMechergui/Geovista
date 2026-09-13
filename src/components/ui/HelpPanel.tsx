@@ -7,20 +7,16 @@ import {
   Keyboard,
   Layers,
   Mountain,
-  Box,
+  Globe2,
   Download,
   HelpCircle,
+  Search,
 } from "lucide-react";
-
-/* ================================================================== */
-/*  Help / Legend panel                                                 */
-/* ================================================================== */
 
 export default function HelpPanel({ onClose }: { onClose: () => void }) {
   return (
     <div className="animate-fade-in absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="relative flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
-        {/* Header */}
         <div className="flex items-center justify-between border-b border-zinc-800 px-5 py-3">
           <div className="flex items-center gap-2 text-sm font-semibold text-zinc-100">
             <HelpCircle size={16} className="text-blue-400" />
@@ -35,77 +31,67 @@ export default function HelpPanel({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        {/* Body */}
         <div className="flex-1 overflow-y-auto p-5">
-          {/* Keyboard */}
-          <SectionTitle icon={<Keyboard size={14} />} title="Keyboard Shortcuts" />
+          <SectionTitle icon={<Search size={14} />} title="Build a digital twin" />
+          <ul className="mb-4 space-y-1 text-xs text-zinc-400">
+            <li><b className="text-zinc-300">Search</b> — type a place name and press Enter; a region is chosen and the 3D view opens.</li>
+            <li><b className="text-zinc-300">Draw</b> — pick the box tool, drag on the map, then “Build digital twin”.</li>
+          </ul>
+
+          <SectionTitle icon={<Globe2 size={14} />} title="Globe view" />
+          <ul className="mb-4 space-y-1 text-xs text-zinc-400">
+            <li><b className="text-zinc-300">Photorealistic</b> — Google 3D Tiles: photogrammetry of real cities and terrain.</li>
+            <li><b className="text-zinc-300">Terrain + Buildings</b> — Cesium World Terrain with OSM Buildings; click a building for its OSM attributes.</li>
+            <li><b className="text-zinc-300">Navigate</b> — left-drag rotates, right-drag / wheel zooms, middle-drag tilts.</li>
+          </ul>
+
+          <SectionTitle icon={<Mountain size={14} />} title="Terrain view" />
+          <ul className="mb-4 space-y-1 text-xs text-zinc-400">
+            <li><b className="text-zinc-300">Surface</b> — satellite imagery, OSM land use, or elevation tint.</li>
+            <li><b className="text-zinc-300">Buildings</b> — OSM footprints extruded and seated on the terrain.</li>
+            <li><b className="text-zinc-300">Geology</b> — Macrostrat layers below the surface; enable Underground camera to look beneath.</li>
+            <li><b className="text-zinc-300">Measure</b> — ruler tool: click two points for distance and an elevation profile.</li>
+          </ul>
+
+          <SectionTitle icon={<Keyboard size={14} />} title="Keyboard shortcuts" />
           <ShortcutTable
             rows={[
               ["Esc", "Exit selection / deselect region"],
-              ["Space", "Toggle 2D ↔ 3D view"],
-              ["1", "Switch to 2D map"],
-              ["2", "Switch to 3D viewer"],
-              ["B", "Cycle basemap"],
-              ["?", "Toggle this help panel"],
+              ["Space", "Toggle 2D ↔ 3D"],
+              ["1", "2D map"],
+              ["2", "3D view"],
+              ["G", "Globe ↔ Terrain"],
+              ["B", "Cycle 2D basemap"],
+              ["?", "Toggle this panel"],
             ]}
           />
 
-          {/* Selection tools */}
-          <SectionTitle icon={<MousePointer2 size={14} />} title="Selection Tools" />
-          <ToolRow icon={<MousePointer2 size={12} />} label="Pan" desc="Click and drag to pan the map." />
-          <ToolRow icon={<Square size={12} />} label="Bbox" desc="Draw a bounding box to select a region for 3D terrain loading." />
-
-          {/* Layers */}
           <SectionTitle icon={<Layers size={14} />} title="Layers" />
           <ul className="mb-4 space-y-1 text-xs text-zinc-400">
-            <li><b className="text-zinc-300">Terrain</b> — SRTM elevation with hypsometric coloring</li>
-            <li><b className="text-zinc-300">Buildings</b> — OpenStreetMap 3D building footprints</li>
-            <li><b className="text-zinc-300">Geology</b> — Macrostrat subsurface geological layers</li>
-            <li><b className="text-zinc-300">Bathymetry</b> — Underwater elevation (GEBCO)</li>
-            <li><b className="text-zinc-300">Satellite</b> — Satellite imagery overlay</li>
-            <li><b className="text-zinc-300">Contours</b> — Elevation contour lines</li>
+            <li><b className="text-zinc-300">Buildings</b> — OSM footprints (terrain) / Cesium OSM Buildings (globe)</li>
+            <li><b className="text-zinc-300">Geology</b> — Macrostrat stratigraphic column, also shown in the sidebar</li>
+            <li><b className="text-zinc-300">Sea level</b> — translucent water plane at 0 m</li>
           </ul>
 
-          {/* 3D Viewer */}
-          <SectionTitle icon={<Mountain size={14} />} title="3D Viewer Controls" />
-          <ul className="mb-4 space-y-1 text-xs text-zinc-400">
-            <li><b className="text-zinc-300">Orbit</b> — Left-click drag</li>
-            <li><b className="text-zinc-300">Pan</b> — Right-click drag</li>
-            <li><b className="text-zinc-300">Zoom</b> — Scroll wheel</li>
-            <li><b className="text-zinc-300">Vertical Exaggeration</b> — Sidebar slider (0.5× – 10×)</li>
-            <li><b className="text-zinc-300">Underground</b> — Toggle to see subsurface geology</li>
-          </ul>
+          <SectionTitle icon={<MousePointer2 size={14} />} title="2D map tools" />
+          <ToolRow icon={<MousePointer2 size={12} />} label="Pan" desc="Drag to pan, wheel to zoom." />
+          <ToolRow icon={<Square size={12} />} label="Draw box" desc="Drag a rectangle to select a region." />
 
-          {/* Analysis */}
-          <SectionTitle icon={<Box size={14} />} title="Analysis Tools" />
-          <ul className="mb-4 space-y-1 text-xs text-zinc-400">
-            <li><b className="text-zinc-300">Elevation Profile</b> — Draw a line to see terrain cross-section</li>
-            <li><b className="text-zinc-300">Coordinate Display</b> — Real-time cursor coords (DD / DMS / UTM)</li>
-            <li><b className="text-zinc-300">Cross Section</b> — Interactive geological cross-section</li>
-            <li><b className="text-zinc-300">Strat Column</b> — Vertical stratigraphic column</li>
-          </ul>
-
-          {/* Export */}
           <SectionTitle icon={<Download size={14} />} title="Export" />
           <ul className="mb-2 space-y-1 text-xs text-zinc-400">
-            <li><b className="text-zinc-300">PNG</b> — Screenshot the current 3D view</li>
-            <li><b className="text-zinc-300">CSV</b> — Export elevation grid data</li>
-            <li><b className="text-zinc-300">GeoJSON</b> — Export selected region polygon</li>
+            <li><b className="text-zinc-300">PNG</b> — screenshot of the current 3D view</li>
+            <li><b className="text-zinc-300">CSV</b> — elevation grid (lon, lat, elevation) once terrain has loaded</li>
+            <li><b className="text-zinc-300">GeoJSON</b> — selected region polygon</li>
           </ul>
         </div>
 
-        {/* Footer */}
         <div className="border-t border-zinc-800 px-5 py-2.5 text-[10px] text-zinc-600">
-          Data: © OpenStreetMap · SRTM/NASA · Macrostrat · GEBCO
+          Data: © OpenStreetMap · Esri · AWS Terrain Tiles · Macrostrat · Google · Cesium
         </div>
       </div>
     </div>
   );
 }
-
-/* ------------------------------------------------------------------ */
-/*  Sub-components                                                     */
-/* ------------------------------------------------------------------ */
 
 function SectionTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (
@@ -129,15 +115,7 @@ function ShortcutTable({ rows }: { rows: [string, string][] }) {
   );
 }
 
-function ToolRow({
-  icon,
-  label,
-  desc,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  desc: string;
-}) {
+function ToolRow({ icon, label, desc }: { icon: React.ReactNode; label: string; desc: string }) {
   return (
     <div className="mb-1.5 flex items-start gap-2 text-xs">
       <span className="mt-0.5 shrink-0 text-zinc-500">{icon}</span>
