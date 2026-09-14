@@ -12,6 +12,8 @@ import { useMapStore } from "@/store/mapStore";
  *   2       — 3D view (current mode)
  *   G       — switch Globe ↔ Terrain
  *   B       — cycle 2D basemap
+ *   T       — toggle the traffic simulation
+ *   R       — toggle the road network
  *   ?       — toggle help panel
  */
 export function useKeyboardShortcuts(onToggleHelp: () => void) {
@@ -77,6 +79,24 @@ export function useKeyboardShortcuts(onToggleHelp: () => void) {
           store.setBasemap(maps[(idx + 1) % maps.length]);
           break;
         }
+
+        case "t":
+        case "T":
+          e.preventDefault();
+          store.toggleLayer("traffic");
+          break;
+
+        case "r":
+        case "R":
+          e.preventDefault();
+          store.toggleLayer("roads");
+          break;
+
+        case "v":
+        case "V":
+          e.preventDefault();
+          store.toggleLayer("trees");
+          break;
 
         case "?":
           e.preventDefault();

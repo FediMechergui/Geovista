@@ -3,8 +3,17 @@
 import { useState, useCallback } from 'react';
 import { useMapStore } from '@/store/mapStore';
 import type { Basemap, LayerVisibility, TerrainTexture } from '@/types/geo';
-import { exportScreenshotPNG, exportRegionGeoJSON, exportElevationCSV } from '@/lib/exportUtils';
+import {
+  exportScreenshotPNG,
+  exportRegionGeoJSON,
+  exportElevationCSV,
+  exportCongestionGeoJSON,
+  exportProspectivityCSV,
+} from '@/lib/exportUtils';
 import StratColumn from '@/components/geology/StratColumn';
+import ProspectPanel from '@/components/geology/ProspectPanel';
+import TrafficPanel from '@/components/traffic/TrafficPanel';
+import { activeTrafficSession } from '@/lib/traffic/trafficService';
 import {
   Square,
   MousePointer2,
@@ -20,6 +29,10 @@ import {
   MapPin,
   Globe2,
   Mountain,
+  Route,
+  TrafficCone,
+  Droplets,
+  Trees,
   X,
 } from 'lucide-react';
 
@@ -56,8 +69,12 @@ function Section({
 /* ------------------------------------------------------------------ */
 
 const LAYER_META: { key: keyof LayerVisibility; label: string; hint: string; Icon: typeof Building2 }[] = [
-  { key: 'buildings', label: 'Buildings', hint: 'OSM footprints (terrain) / Cesium OSM Buildings (globe)', Icon: Building2 },
+  { key: 'buildings', label: 'Buildings', hint: 'OSM footprints with material-accurate facades (terrain) / Cesium OSM Buildings or extruded OSM footprints (globe)', Icon: Building2 },
+  { key: 'roads', label: 'Roads', hint: 'OSM drivable road network, drawn to its real lane count', Icon: Route },
+  { key: 'traffic', label: 'Traffic', hint: 'Vehicle microsimulation driving on the road network', Icon: TrafficCone },
+  { key: 'trees', label: 'Trees', hint: 'OSM trees and tree rows, plus trees scattered through mapped woodland', Icon: Trees },
   { key: 'geology', label: 'Geology', hint: 'Macrostrat subsurface column (terrain view)', Icon: Layers },
+  { key: 'prospect', label: 'Subsurface targets', hint: 'Scored aquifer / hydrocarbon intervals in the geology stack', Icon: Droplets },
   { key: 'water', label: 'Sea level', hint: 'Water plane at 0 m (terrain view)', Icon: Waves },
 ];
 
@@ -95,6 +112,9 @@ export default function Sidebar({ collapsed }: { collapsed: boolean }) {
   const regionStats = useMapStore((s) => s.regionStats);
   const geologyColumn = useMapStore((s) => s.geologyColumn);
   const elevationGrid = useMapStore((s) => s.elevationGrid);
+  const materialBreakdown = useMapStore((s) => s.materialBreakdown);
+  const vegetation = useMapStore((s) => s.vegetation);
+  const prospectReport = useMapStore((s) => s.prospectReport);
 
   const setSelectionMode = useMapStore((s) => s.setSelectionMode);
   const setSelectedRegion = useMapStore((s) => s.setSelectedRegion);
@@ -114,6 +134,14 @@ export default function Sidebar({ collapsed }: { collapsed: boolean }) {
   const handleExportGeoJSON = useCallback(() => {
     const region = useMapStore.getState().selectedRegion;
     if (region) exportRegionGeoJSON(region);
+  }, []);
+  const handleExportCongestion = useCallback(() => {
+    const active = activeTrafficSession();
+    if (active) exportCongestionGeoJSON(active.graph, active.simulation.edgeStats());
+  }, []);
+  const handleExportProspect = useCallback(() => {
+    const report = useMapStore.getState().prospectReport;
+    if (report) exportProspectivityCSV(report);
   }, []);
 
   if (collapsed) return null;
@@ -155,6 +183,14 @@ export default function Sidebar({ collapsed }: { collapsed: boolean }) {
               <Stat
                 label="Buildings"
                 value={regionStats && layers.buildings ? regionStats.buildingCount.toLocaleString() : '—'}
+              />
+              <Stat
+                label="Roads"
+                value={
+                  regionStats && layers.roads && regionStats.roadLengthKm > 0
+                    ? `${regionStats.roadLengthKm.toFixed(1)} km`
+                    : '—'
+                }
               />
             </div>
 
@@ -280,6 +316,89 @@ export default function Sidebar({ collapsed }: { collapsed: boolean }) {
         </div>
       </Section>
 
+      {/* ---- Traffic ---- */}
+      <Section title="Traffic simulation" defaultOpen={false}>
+        <TrafficPanel />
+      </Section>
+
+      {/* ---- Building materials ---- */}
+      <Section title="Building materials" defaultOpen={false}>
+        {materialBreakdown && materialBreakdown.total > 0 ? (
+          <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-md bg-zinc-800/70 px-2.5 py-2 text-[11px]">
+              <Stat label="Buildings" value={materialBreakdown.total.toLocaleString()} />
+              <Stat
+                label="OSM-tagged"
+                value={`${((materialBreakdown.tagged / materialBreakdown.total) * 100).toFixed(0)} %`}
+              />
+              <Stat
+                label="Mean confidence"
+                value={`${(materialBreakdown.meanConfidence * 100).toFixed(0)} %`}
+              />
+            </div>
+
+            <ul className="flex flex-col gap-1">
+              {materialBreakdown.byMaterial.slice(0, 8).map((m) => (
+                <li key={m.key} className="flex items-center gap-2 text-[11px]">
+                  <span
+                    aria-hidden
+                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm ring-1 ring-zinc-700"
+                    style={{ background: m.color }}
+                  />
+                  <span className="flex-1 truncate text-zinc-300">{m.label}</span>
+                  <span className="tabular-nums text-zinc-500">{m.count.toLocaleString()}</span>
+                </li>
+              ))}
+            </ul>
+
+            <p className="text-[10px] leading-snug text-zinc-600">
+              Materials come from <code>building:material</code> and its relatives where OSM has
+              them; the rest are inferred from building use, age and height, and counted at lower
+              confidence.
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-zinc-500">
+            {layers.buildings
+              ? 'Open the Terrain view to resolve building materials for this region.'
+              : 'Enable the Buildings layer and open the Terrain view.'}
+          </p>
+        )}
+      </Section>
+
+      {/* ---- Vegetation ---- */}
+      <Section title="Vegetation" defaultOpen={false}>
+        {vegetation && vegetation.trees.length > 0 ? (
+          <div className="flex flex-col gap-2">
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 rounded-md bg-zinc-800/70 px-2.5 py-2 text-[11px]">
+              <Stat label="Trees" value={vegetation.trees.length.toLocaleString()} />
+              <Stat label="Wooded areas" value={vegetation.areas.length.toLocaleString()} />
+              <Stat label="Surveyed" value={vegetation.counts.surveyed.toLocaleString()} />
+              <Stat label="In tree rows" value={vegetation.counts.row.toLocaleString()} />
+              <Stat label="Scattered" value={vegetation.counts.scattered.toLocaleString()} />
+            </div>
+
+            <p className="text-[10px] leading-snug text-zinc-600">
+              Surveyed trees are individually mapped in OSM (<code>natural=tree</code>) and stand
+              where OSM says. Tree rows are stepped along their way. Scattered trees fill mapped
+              woodland and parks at a density set by the tag — the canopy outline is real, the
+              individual trunks are generated, and the same region always regrows the same wood.
+            </p>
+          </div>
+        ) : (
+          <p className="text-xs text-zinc-500">
+            {layers.trees
+              ? 'Open the Terrain view to load trees for this region.'
+              : 'Enable the Trees layer and open a 3D view.'}
+          </p>
+        )}
+      </Section>
+
+      {/* ---- Subsurface targets ---- */}
+      <Section title="Subsurface targets" defaultOpen={false}>
+        <ProspectPanel />
+      </Section>
+
       {/* ---- Geology ---- */}
       <Section title="Geology" defaultOpen={false}>
         {geologyColumn ? (
@@ -326,6 +445,26 @@ export default function Sidebar({ collapsed }: { collapsed: boolean }) {
             onClick={handleExportCSV}
           />
           <ExportBtn Icon={FileJson} label="Region (GeoJSON)" disabled={!selectedRegion} onClick={handleExportGeoJSON} />
+          <ExportBtn
+            Icon={TrafficCone}
+            label={
+              layers.traffic
+                ? 'Congestion by link (GeoJSON)'
+                : 'Congestion by link (GeoJSON) — run traffic first'
+            }
+            disabled={!layers.traffic}
+            onClick={handleExportCongestion}
+          />
+          <ExportBtn
+            Icon={Droplets}
+            label={
+              prospectReport
+                ? 'Subsurface screening (CSV)'
+                : 'Subsurface screening (CSV) — load geology first'
+            }
+            disabled={!prospectReport}
+            onClick={handleExportProspect}
+          />
         </div>
       </Section>
 

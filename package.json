@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "prebuild": "node scripts/copy-cesium.mjs"
+    "prebuild": "node scripts/copy-cesium.mjs",
+    "check:sim": "tsx scripts/check-simulation.ts",
+    "check:scene": "tsx scripts/check-scene.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",
@@ -35,6 +37,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.3",
     "tailwindcss": "^4",
+    "tsx": "^4.20.6",
     "typescript": "^5"
   }
 }
