@@ -141,7 +141,16 @@ export function decodeTerrarium(r: number, g: number, b: number): number {
 export async function loadMultiTileDEM(
   bbox: BBox,
   zoom: number,
-  { clampOcean = true, signal }: { clampOcean?: boolean; signal?: AbortSignal } = {},
+  {
+    clampOcean = true,
+    signal,
+    onProgress,
+  }: {
+    clampOcean?: boolean;
+    signal?: AbortSignal;
+    /** Called as each tile settles, so the UI can show real progress. */
+    onProgress?: (loaded: number, total: number) => void;
+  } = {},
 ): Promise<ElevationGrid> {
   const range = tileRangeForBBox(bbox, zoom);
   const tilesX = range.x1 - range.x0 + 1;
@@ -151,13 +160,22 @@ export async function loadMultiTileDEM(
   const totalH = tilesY * TILE_PX;
   const stitched = new Float32Array(totalW * totalH);
 
+  const total = tilesX * tilesY;
+  let settled = 0;
+  onProgress?.(0, total);
+
   const promises: Promise<{ tx: number; ty: number; imgData: ImageData | null }>[] = [];
   for (let ty = range.y0; ty <= range.y1; ty++) {
     for (let tx = range.x0; tx <= range.x1; tx++) {
       promises.push(
         loadTerrainTile(zoom, tx, ty, signal)
           .then((imgData) => ({ tx, ty, imgData }))
-          .catch(() => ({ tx, ty, imgData: null })),
+          .catch(() => ({ tx, ty, imgData: null }))
+          .then((result) => {
+            settled++;
+            if (!signal?.aborted) onProgress?.(settled, total);
+            return result;
+          }),
       );
     }
   }

@@ -59,6 +59,17 @@ import {
   type CesiumVehicleLayer,
 } from '@/lib/traffic/cesiumTraffic';
 import TrafficPanel from '@/components/traffic/TrafficPanel';
+import { createTerrariumTerrainProvider, clearTerrariumCache } from '@/lib/terrain/cesiumTerrain';
+import { fetchBuildings } from '@/lib/buildings/osmFetcher';
+import {
+  createCesiumBuildingLayer,
+  type CesiumBuildingLayer,
+} from '@/lib/buildings/cesiumBuildings';
+import { fetchVegetation } from '@/lib/vegetation/osmVegetation';
+import {
+  createCesiumTreeLayer,
+  type CesiumTreeLayer,
+} from '@/lib/vegetation/cesiumTrees';
 import {
   CESIUM_BASE_URL,
   CESIUM_ION_TOKEN,
@@ -66,7 +77,9 @@ import {
   TILE_URLS,
 } from '@/lib/constants';
 import type { BBox } from '@/types/geo';
-import { Ruler, X, Trash2, Loader2, Globe2, Box, Building2, MapPin, TrafficCone } from 'lucide-react';
+import {
+  Ruler, X, Trash2, Loader2, Globe2, Box, Building2, MapPin, TrafficCone, Trees, Info,
+} from 'lucide-react';
 
 /* ================================================================== */
 /*  Module setup (client only — this file is dynamically imported)     */
@@ -179,6 +192,7 @@ export default function CesiumViewer() {
   const regionStats = useMapStore((s) => s.regionStats);
   const trafficConfig = useMapStore((s) => s.trafficConfig);
   const trafficUi = useMapStore((s) => s.trafficUi);
+  const trafficLoading = useMapStore((s) => s.trafficLoading);
   const set3DActive = useMapStore((s) => s.set3DActive);
   const setCursorCoord = useMapStore((s) => s.setCursorCoord);
   const setTrafficStats = useMapStore((s) => s.setTrafficStats);
@@ -197,6 +211,8 @@ export default function CesiumViewer() {
   const lastMoveRef = useRef(0);
   const roadLayerRef = useRef<CesiumRoadLayer | null>(null);
   const vehicleLayerRef = useRef<CesiumVehicleLayer | null>(null);
+  const osmFallbackRef = useRef<CesiumBuildingLayer | null>(null);
+  const treeLayerRef = useRef<CesiumTreeLayer | null>(null);
   /** Read by the per-frame listener, which must not re-subscribe on each change. */
   const trafficUiRef = useRef(trafficUi);
 
@@ -205,7 +221,12 @@ export default function CesiumViewer() {
   const [source, setSource] = useState<GlobeSource>(HAS_GOOGLE ? 'google' : 'cesium');
   const [googleStatus, setGoogleStatus] = useState<Status>('idle');
   const [terrainStatus, setTerrainStatus] = useState<Status>('idle');
+  const [terrainSource, setTerrainSource] = useState<'ion' | 'aws' | null>(null);
   const [buildingsStatus, setBuildingsStatus] = useState<Status>('idle');
+  const [treesStatus, setTreesStatus] = useState<Status>('idle');
+  const [buildingCount, setBuildingCount] = useState(0);
+  const [treeCount, setTreeCount] = useState(0);
+  const [sourcesOpen, setSourcesOpen] = useState(false);
   const [measureMode, setMeasureMode] = useState(false);
   const [measurePoints, setMeasurePoints] = useState<MeasurePoint[]>([]);
   const [featureInfo, setFeatureInfo] = useState<FeatureInfo | null>(null);
@@ -252,24 +273,43 @@ export default function CesiumViewer() {
     viewerRef.current = viewer;
     setReady(true);
 
+    if (process.env.NODE_ENV !== 'production') {
+      // Handle for local debugging and the browser check harness.
+      (window as unknown as { __cesiumViewer?: Viewer }).__cesiumViewer = viewer;
+    }
+
+    // Cesium World Terrain needs an Ion token; the free AWS Terrarium tiles
+    // that back the Terrain view do not. Either way the globe gets relief,
+    // and either way the user is told which one they are looking at.
+    setTerrainStatus('loading');
     if (HAS_ION) {
-      setTerrainStatus('loading');
       createWorldTerrainAsync({ requestVertexNormals: true, requestWaterMask: true })
         .then((tp) => {
           if (viewer.isDestroyed()) return;
           viewer.terrainProvider = tp;
+          setTerrainSource('ion');
           setTerrainStatus('ready');
         })
         .catch((err) => {
-          console.warn('[CesiumViewer] World Terrain failed:', err);
-          setTerrainStatus('failed');
+          console.warn('[CesiumViewer] World Terrain failed, falling back to AWS tiles:', err);
+          if (viewer.isDestroyed()) return;
+          viewer.terrainProvider = createTerrariumTerrainProvider();
+          setTerrainSource('aws');
+          setTerrainStatus('ready');
         });
+    } else {
+      viewer.terrainProvider = createTerrariumTerrainProvider();
+      setTerrainSource('aws');
+      setTerrainStatus('ready');
     }
 
     return () => {
       viewerRef.current = null;
       googleRef.current = null;
       osmRef.current = null;
+      osmFallbackRef.current = null;
+      treeLayerRef.current = null;
+      clearTerrariumCache();
       regionEntityRef.current = null;
       measureEntitiesRef.current = [];
       highlightRef.current = null;
@@ -363,6 +403,93 @@ export default function CesiumViewer() {
       cancelled = true;
     };
   }, [ready, source, layers.buildings]);
+
+  /* ================================================================ */
+  /*  Buildings without Ion — extruded OSM footprints                  */
+  /* ================================================================ */
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    // Ion's global tileset is strictly better where it is available; this
+    // path only covers the selected region, and only when there is no token.
+    if (!ready || !viewer || HAS_ION) return;
+
+    if (!selectedRegion || source !== 'cesium' || !layers.buildings) {
+      osmFallbackRef.current?.destroy();
+      osmFallbackRef.current = null;
+      setBuildingCount(0);
+      setBuildingsStatus('idle');
+      return;
+    }
+
+    const ac = new AbortController();
+    setBuildingsStatus('loading');
+
+    fetchBuildings(selectedRegion, ac.signal)
+      .then((data) => createCesiumBuildingLayer(viewer, data, ac.signal))
+      .then((layer) => {
+        if (ac.signal.aborted || viewer.isDestroyed()) {
+          layer?.destroy();
+          return;
+        }
+        osmFallbackRef.current = layer;
+        setBuildingCount(layer?.count ?? 0);
+        setBuildingsStatus(layer ? 'ready' : 'idle');
+      })
+      .catch((err) => {
+        if (ac.signal.aborted) return;
+        console.warn('[CesiumViewer] OSM building fallback failed:', err);
+        setBuildingsStatus('failed');
+      });
+
+    return () => {
+      ac.abort();
+      osmFallbackRef.current?.destroy();
+      osmFallbackRef.current = null;
+    };
+  }, [ready, source, selectedRegion, layers.buildings]);
+
+  /* ================================================================ */
+  /*  Trees                                                            */
+  /* ================================================================ */
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!ready || !viewer) return;
+
+    // Google's photogrammetry already contains the real trees, and billboards
+    // clamp to the globe surface, which is hidden under that tileset.
+    if (!selectedRegion || source !== 'cesium' || !layers.trees) {
+      treeLayerRef.current?.destroy();
+      treeLayerRef.current = null;
+      setTreeCount(0);
+      setTreesStatus('idle');
+      return;
+    }
+
+    const ac = new AbortController();
+    setTreesStatus('loading');
+
+    fetchVegetation(selectedRegion, ac.signal)
+      .then((data) => {
+        if (ac.signal.aborted || viewer.isDestroyed()) return;
+        const layer = createCesiumTreeLayer(viewer, data.trees);
+        treeLayerRef.current = layer;
+        setTreeCount(layer?.count ?? 0);
+        setTreesStatus(layer ? 'ready' : 'idle');
+      })
+      .catch((err) => {
+        if (ac.signal.aborted) return;
+        console.warn('[CesiumViewer] vegetation failed:', err);
+        setTreesStatus('failed');
+      });
+
+    return () => {
+      ac.abort();
+      treeLayerRef.current?.destroy();
+      treeLayerRef.current = null;
+    };
+  }, [ready, source, selectedRegion, layers.trees]);
 
   /* ================================================================ */
   /*  Region outline + camera                                          */
@@ -710,6 +837,13 @@ export default function CesiumViewer() {
 
   const googleActive = source === 'google' && googleStatus === 'ready';
 
+  const loadingItems: string[] = [];
+  if (terrainStatus === 'loading') loadingItems.push('terrain');
+  if (googleStatus === 'loading') loadingItems.push('photorealistic tiles');
+  if (buildingsStatus === 'loading') loadingItems.push('buildings');
+  if (treesStatus === 'loading') loadingItems.push('trees');
+  if (trafficLoading) loadingItems.push('roads');
+
   return (
     <div className="relative h-full w-full bg-black">
       <div ref={containerRef} className="absolute inset-0" />
@@ -784,14 +918,103 @@ export default function CesiumViewer() {
       </div>
 
       {/* ---------- Loading ---------- */}
-      {(googleStatus === 'loading' || terrainStatus === 'loading' || buildingsStatus === 'loading') && (
+      {loadingItems.length > 0 && (
         <div className="pointer-events-none absolute left-1/2 top-14 flex -translate-x-1/2 items-center gap-2 rounded-full bg-zinc-900/90 px-4 py-1.5 text-xs font-medium text-zinc-200 shadow-lg backdrop-blur-md">
           <Loader2 size={14} className="animate-spin text-blue-400" />
-          {googleStatus === 'loading' && 'Loading photorealistic tiles… '}
-          {terrainStatus === 'loading' && 'Loading world terrain… '}
-          {buildingsStatus === 'loading' && 'Loading 3D buildings…'}
+          Loading {loadingItems.join(' · ')}
         </div>
       )}
+
+      {/* ---------- What is actually on the globe ---------- */}
+      <div className="absolute bottom-16 right-3 w-64">
+        <button
+          onClick={() => setSourcesOpen((o) => !o)}
+          className="ml-auto flex cursor-pointer items-center gap-1.5 rounded-lg bg-zinc-900/90 px-2.5 py-1.5 text-[11px] font-medium text-zinc-300 shadow-lg backdrop-blur-md transition-colors hover:bg-zinc-800"
+        >
+          <Info size={13} />
+          Data sources
+        </button>
+
+        {sourcesOpen && (
+          <div className="mt-2 rounded-xl bg-zinc-900/95 p-3 text-zinc-200 shadow-lg backdrop-blur-md">
+            <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+              On the globe
+            </div>
+            <ul className="flex flex-col gap-1.5">
+              <SourceRow
+                Icon={Globe2}
+                label="Terrain"
+                status={terrainStatus}
+                detail={
+                  terrainSource === 'ion'
+                    ? 'Cesium World Terrain (Ion)'
+                    : terrainSource === 'aws'
+                      ? 'AWS Terrain Tiles — free, no key'
+                      : '—'
+                }
+                upgrade={
+                  terrainSource === 'aws'
+                    ? 'NEXT_PUBLIC_CESIUM_ION_TOKEN adds Cesium World Terrain (30 m, water mask)'
+                    : undefined
+                }
+              />
+              <SourceRow
+                Icon={Building2}
+                label="Buildings"
+                status={buildingsStatus}
+                detail={
+                  !layers.buildings
+                    ? 'layer off'
+                    : HAS_ION
+                      ? 'Cesium OSM Buildings (Ion, global)'
+                      : selectedRegion
+                        ? `OSM footprints — ${buildingCount.toLocaleString()} in this region`
+                        : 'select a region to load them'
+                }
+                upgrade={
+                  !HAS_ION
+                    ? 'NEXT_PUBLIC_CESIUM_ION_TOKEN swaps in the global pre-tiled set'
+                    : undefined
+                }
+              />
+              <SourceRow
+                Icon={Trees}
+                label="Trees"
+                status={treesStatus}
+                detail={
+                  !layers.trees
+                    ? 'layer off'
+                    : source === 'google'
+                      ? 'included in the photorealistic mesh'
+                      : selectedRegion
+                        ? `OSM vegetation — ${treeCount.toLocaleString()} placed`
+                        : 'select a region to load them'
+                }
+              />
+              <SourceRow
+                Icon={Box}
+                label="Photorealistic"
+                status={googleStatus}
+                detail={HAS_GOOGLE ? 'Google 3D Tiles' : 'not configured'}
+                upgrade={
+                  !HAS_GOOGLE
+                    ? 'NEXT_PUBLIC_GOOGLE_MAPS_API_KEY (Map Tiles API) adds real captured mesh: buildings, trees and terrain'
+                    : undefined
+                }
+              />
+            </ul>
+
+            {(!HAS_ION || !HAS_GOOGLE) && (
+              <p className="mt-2 border-t border-zinc-800 pt-2 text-[10px] leading-snug text-zinc-500">
+                Everything above works with no API key. Set the variables named above in{' '}
+                <code className="text-zinc-400">.env.local</code> (see{' '}
+                <code className="text-zinc-400">.env.example</code>) and rebuild to upgrade a
+                source.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* ---------- Feature card ---------- */}
       {featureInfo && !measureMode && (
@@ -854,19 +1077,34 @@ export default function CesiumViewer() {
       )}
 
       {/* ---------- Source badges ---------- */}
-      <div className="pointer-events-none absolute bottom-8 right-3 flex flex-col items-end gap-1">
+      {/* Each badge names the source actually in use, so the globe never
+          claims Ion data it is not drawing. What is missing, and what it
+          would add, lives in the Data sources panel instead of a badge. */}
+      <div className="pointer-events-none absolute bottom-8 left-3 flex flex-col items-start gap-1">
         {googleActive && <Badge color="bg-blue-600/85" Icon={Box} label="Google Photorealistic 3D Tiles" />}
         {!googleActive && terrainStatus === 'ready' && (
-          <Badge color="bg-emerald-600/85" Icon={Globe2} label="Cesium World Terrain" />
+          <Badge
+            color="bg-emerald-600/85"
+            Icon={Globe2}
+            label={terrainSource === 'ion' ? 'Cesium World Terrain' : 'AWS Terrain Tiles'}
+          />
         )}
         {!googleActive && buildingsStatus === 'ready' && layers.buildings && (
-          <Badge color="bg-orange-600/85" Icon={Building2} label="Cesium OSM Buildings" />
+          <Badge
+            color="bg-orange-600/85"
+            Icon={Building2}
+            label={
+              HAS_ION
+                ? 'Cesium OSM Buildings'
+                : `OSM buildings · ${buildingCount.toLocaleString()}`
+            }
+          />
+        )}
+        {!googleActive && treesStatus === 'ready' && layers.trees && (
+          <Badge color="bg-green-700/85" Icon={Trees} label={`OSM trees · ${treeCount.toLocaleString()}`} />
         )}
         {layers.traffic && session && (
           <Badge color="bg-sky-600/85" Icon={TrafficCone} label="Live traffic simulation" />
-        )}
-        {!HAS_ION && !googleActive && (
-          <Badge color="bg-zinc-700/90" Icon={Globe2} label="Add a Cesium Ion token for terrain & buildings" />
         )}
       </div>
     </div>
@@ -898,6 +1136,44 @@ function IconBtn({
     >
       {children}
     </button>
+  );
+}
+
+/** One line in the data-sources panel: what it is, where it came from. */
+function SourceRow({
+  Icon,
+  label,
+  status,
+  detail,
+  upgrade,
+}: {
+  Icon: typeof Globe2;
+  label: string;
+  status: Status;
+  detail: string;
+  upgrade?: string;
+}) {
+  const dot =
+    status === 'ready'
+      ? 'bg-emerald-500'
+      : status === 'loading'
+        ? 'bg-blue-500 animate-pulse'
+        : status === 'failed'
+          ? 'bg-red-500'
+          : 'bg-zinc-600';
+
+  return (
+    <li className="text-[11px] leading-snug">
+      <div className="flex items-center gap-1.5">
+        <span aria-hidden className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />
+        <Icon size={11} className="shrink-0 text-zinc-500" />
+        <span className="font-medium text-zinc-300">{label}</span>
+        <span className="ml-auto truncate text-zinc-500" title={detail}>
+          {detail}
+        </span>
+      </div>
+      {upgrade && <p className="ml-3 mt-0.5 text-[10px] text-zinc-600">{upgrade}</p>}
+    </li>
   );
 }
 

@@ -37,6 +37,8 @@ import {
 import { generateDetailedBuildings } from '@/lib/buildings/buildingMesh';
 import { summariseMaterials, clearFacadeTextureCache } from '@/lib/buildings/materials';
 import { fetchBuildings } from '@/lib/buildings/osmFetcher';
+import { fetchVegetation } from '@/lib/vegetation/osmVegetation';
+import { generateTreeLayer } from '@/lib/vegetation/treeMesh';
 import { fetchGeologicalColumn, columnToLayers } from '@/lib/geology/macrostratApi';
 import { analyseProspectivity } from '@/lib/geology/prospectivity';
 import { geodesicDistance } from '@/lib/analysis/coordTransform';
@@ -278,6 +280,7 @@ function TrafficTicker({
 interface SceneProps {
   terrainMesh: THREE.Mesh | null;
   buildingGroup: THREE.Group | null;
+  treeGroup: THREE.Group | null;
   geologyGroup: THREE.Group | null;
   prospectGroup: THREE.Group | null;
   roadGroup: THREE.Group | null;
@@ -297,6 +300,7 @@ interface SceneProps {
 function Scene({
   terrainMesh,
   buildingGroup,
+  treeGroup,
   geologyGroup,
   prospectGroup,
   roadGroup,
@@ -348,6 +352,7 @@ function Scene({
         {terrainMesh && <primitive object={terrainMesh} onClick={handleClick} />}
         {roadGroup && <primitive object={roadGroup} />}
         {buildingGroup && <primitive object={buildingGroup} />}
+        {treeGroup && <primitive object={treeGroup} />}
         {geologyGroup && <primitive object={geologyGroup} />}
         {prospectGroup && <primitive object={prospectGroup} />}
         {vehicleLayer && <primitive object={vehicleLayer.group} />}
@@ -394,6 +399,7 @@ export default function TerrainViewer() {
   const setGeologyColumn = useMapStore((s) => s.setGeologyColumn);
   const setMaterialBreakdown = useMapStore((s) => s.setMaterialBreakdown);
   const setProspectReport = useMapStore((s) => s.setProspectReport);
+  const setVegetation = useMapStore((s) => s.setVegetation);
   const setTrafficLoading = useMapStore((s) => s.setTrafficLoading);
   const setTrafficError = useMapStore((s) => s.setTrafficError);
 
@@ -404,6 +410,7 @@ export default function TerrainViewer() {
   const [satelliteCanvas, setSatelliteCanvas] = useState<OffscreenCanvas | null>(null);
   const [landUseCanvas, setLandUseCanvas] = useState<OffscreenCanvas | null>(null);
   const [session, setSession] = useState<TrafficSession | null>(null);
+  const vegetation = useMapStore((s) => s.vegetation);
 
   /* ---- Loading / error ---- */
   const [loadingTerrain, setLoadingTerrain] = useState(false);
@@ -411,6 +418,8 @@ export default function TerrainViewer() {
   const [loadingGeology, setLoadingGeology] = useState(false);
   const [loadingLandUse, setLoadingLandUse] = useState(false);
   const [loadingRoads, setLoadingRoads] = useState(false);
+  const [loadingTrees, setLoadingTrees] = useState(false);
+  const [demProgress, setDemProgress] = useState<{ loaded: number; total: number } | null>(null);
   const [imageryProgress, setImageryProgress] = useState<{ loaded: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -449,7 +458,12 @@ export default function TerrainViewer() {
     (async () => {
       try {
         const zoom = chooseDemZoom(selectedRegion, { maxTiles: DEM_MAX_TILES, maxZoom: DEM_MAX_ZOOM });
-        const g = await loadMultiTileDEM(selectedRegion, zoom, { signal: ac.signal });
+        const g = await loadMultiTileDEM(selectedRegion, zoom, {
+          signal: ac.signal,
+          onProgress: (loaded, total) => {
+            if (!ac.signal.aborted) setDemProgress({ loaded, total });
+          },
+        });
         if (ac.signal.aborted) return;
         setGrid(g);
         setElevationGrid(g);
@@ -462,13 +476,17 @@ export default function TerrainViewer() {
           demResolutionM: g.resolution,
           buildingCount: 0,
           roadLengthKm: 0,
+          treeCount: 0,
         });
       } catch (err) {
         if (!ac.signal.aborted) {
           setError(err instanceof Error ? err.message : 'Failed to load terrain');
         }
       } finally {
-        if (!ac.signal.aborted) setLoadingTerrain(false);
+        if (!ac.signal.aborted) {
+          setLoadingTerrain(false);
+          setDemProgress(null);
+        }
       }
     })();
 
@@ -560,7 +578,35 @@ export default function TerrainViewer() {
   }, [grid, selectedRegion, layers.buildings]);
 
   /* ================================================================ */
-  /*  5. Geology column + prospectivity                                */
+  /*  5. Vegetation                                                    */
+  /* ================================================================ */
+
+  useEffect(() => {
+    if (!grid || !layers.trees) {
+      setVegetation(null);
+      return;
+    }
+    const ac = new AbortController();
+    setLoadingTrees(true);
+
+    fetchVegetation(grid.bbox, ac.signal)
+      .then((data) => {
+        if (!ac.signal.aborted) setVegetation(data);
+      })
+      .catch((err) => {
+        if (ac.signal.aborted) return;
+        console.warn('[TerrainViewer] vegetation fetch failed:', err);
+        setVegetation(null);
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setLoadingTrees(false);
+      });
+
+    return () => ac.abort();
+  }, [grid, layers.trees, setVegetation]);
+
+  /* ================================================================ */
+  /*  6. Geology column + prospectivity                                */
   /* ================================================================ */
 
   useEffect(() => {
@@ -709,6 +755,28 @@ export default function TerrainViewer() {
 
     return () => disposeObject(group);
   }, [grid, buildings, setMaterialBreakdown]);
+
+  const [treeGroup, setTreeGroup] = useState<THREE.Group | null>(null);
+  useEffect(() => {
+    if (!grid || !vegetation || vegetation.trees.length === 0 || !layers.trees) {
+      setTreeGroup(null);
+      useMapStore.setState((s) => ({
+        regionStats: s.regionStats ? { ...s.regionStats, treeCount: 0 } : null,
+      }));
+      return;
+    }
+
+    const { group, rendered } = generateTreeLayer(vegetation.trees, grid.bbox, {
+      elevationAt: (lon, lat) => sampleElevation(grid, lon, lat),
+    });
+
+    setTreeGroup(group);
+    useMapStore.setState((s) => ({
+      regionStats: s.regionStats ? { ...s.regionStats, treeCount: rendered } : null,
+    }));
+
+    return () => disposeObject(group);
+  }, [grid, vegetation, layers.trees]);
 
   const [geologyGroup, setGeologyGroup] = useState<THREE.Group | null>(null);
   useEffect(() => {
@@ -884,7 +952,13 @@ export default function TerrainViewer() {
   /* ================================================================ */
 
   const loadingItems: string[] = [];
-  if (loadingTerrain) loadingItems.push('terrain');
+  if (loadingTerrain) {
+    loadingItems.push(
+      demProgress && demProgress.total > 1
+        ? `terrain ${demProgress.loaded}/${demProgress.total} tiles`
+        : 'terrain',
+    );
+  }
   if (imageryProgress)
     loadingItems.push(
       `imagery ${Math.round((imageryProgress.loaded / Math.max(1, imageryProgress.total)) * 100)}%`,
@@ -893,6 +967,7 @@ export default function TerrainViewer() {
   if (loadingBuildings) loadingItems.push('buildings');
   if (loadingGeology) loadingItems.push('geology');
   if (loadingRoads) loadingItems.push('roads');
+  if (loadingTrees) loadingItems.push('trees');
 
   const textureOptions: { key: TerrainTexture; label: string; Icon: typeof Satellite }[] = [
     { key: 'satellite', label: 'Satellite', Icon: Satellite },
@@ -921,6 +996,7 @@ export default function TerrainViewer() {
         <Scene
           terrainMesh={terrainMesh}
           buildingGroup={buildingGroup}
+          treeGroup={treeGroup}
           geologyGroup={geologyGroup}
           prospectGroup={prospectGroup}
           roadGroup={roadGroup}
@@ -1045,6 +1121,14 @@ export default function TerrainViewer() {
                 <span>Roads</span>
                 <span className="text-right tabular-nums text-zinc-300">
                   {(session.graph.totalLengthM / 1000).toFixed(1)} km
+                </span>
+              </>
+            )}
+            {layers.trees && vegetation && (
+              <>
+                <span>Trees</span>
+                <span className="text-right tabular-nums text-zinc-300">
+                  {vegetation.trees.length.toLocaleString()}
                 </span>
               </>
             )}

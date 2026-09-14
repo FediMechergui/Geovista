@@ -82,6 +82,7 @@ export default function HelpPanel({ onClose }: { onClose: () => void }) {
               ["B", "Cycle 2D basemap"],
               ["T", "Toggle the traffic simulation"],
               ["R", "Toggle the road network"],
+              ["V", "Toggle trees"],
               ["?", "Toggle this panel"],
             ]}
           />
@@ -91,6 +92,7 @@ export default function HelpPanel({ onClose }: { onClose: () => void }) {
             <li><b className="text-zinc-300">Buildings</b> — OSM footprints (terrain) / Cesium OSM Buildings (globe)</li>
             <li><b className="text-zinc-300">Roads</b> — OSM drivable network, drawn to its real lane count</li>
             <li><b className="text-zinc-300">Traffic</b> — the vehicle microsimulation; turning it on turns Roads on</li>
+            <li><b className="text-zinc-300">Trees</b> — OSM trees and tree rows, plus trees scattered through mapped woodland at a per-tag density</li>
             <li><b className="text-zinc-300">Geology</b> — Macrostrat stratigraphic column, also shown in the sidebar</li>
             <li><b className="text-zinc-300">Subsurface targets</b> — scored aquifer / hydrocarbon intervals inside the geology stack</li>
             <li><b className="text-zinc-300">Sea level</b> — translucent water plane at 0 m</li>

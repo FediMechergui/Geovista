@@ -14,6 +14,7 @@ import type {
 import type { GeologicalColumn } from '@/types/geology';
 import type { MaterialBreakdown } from '@/types/buildings';
 import type { ProspectivityReport } from '@/types/subsurface';
+import type { VegetationData } from '@/types/vegetation';
 import type { SimConfig, TrafficStats } from '@/types/traffic';
 import { DEFAULT_SIM_CONFIG, EMPTY_TRAFFIC_STATS } from '@/types/traffic';
 
@@ -53,6 +54,8 @@ interface MapState {
   elevationGrid: ElevationGrid | null;
   materialBreakdown: MaterialBreakdown | null;
   prospectReport: ProspectivityReport | null;
+  /** Trees placed from OSM for the selected region. */
+  vegetation: VegetationData | null;
 
   /* ---- Traffic ---- */
   trafficConfig: SimConfig;
@@ -86,6 +89,7 @@ interface MapState {
   setElevationGrid: (g: ElevationGrid | null) => void;
   setMaterialBreakdown: (b: MaterialBreakdown | null) => void;
   setProspectReport: (r: ProspectivityReport | null) => void;
+  setVegetation: (v: VegetationData | null) => void;
 
   setTrafficConfig: (patch: Partial<SimConfig>) => void;
   setTrafficUi: (patch: Partial<TrafficUiState>) => void;
@@ -102,6 +106,7 @@ const CLEARED_REGION_DATA = {
   elevationGrid: null,
   materialBreakdown: null,
   prospectReport: null,
+  vegetation: null,
   trafficStats: EMPTY_TRAFFIC_STATS,
   trafficError: null,
 } as const;
@@ -125,6 +130,7 @@ export const useMapStore = create<MapState>((set) => ({
     roads: true,
     traffic: false,
     prospect: false,
+    trees: true,
   },
   verticalExaggeration: 1.0,
   underground: false,
@@ -136,6 +142,7 @@ export const useMapStore = create<MapState>((set) => ({
   elevationGrid: null,
   materialBreakdown: null,
   prospectReport: null,
+  vegetation: null,
 
   trafficConfig: DEFAULT_SIM_CONFIG,
   trafficUi: { running: true, showCongestion: true, showSignals: true },
@@ -177,6 +184,7 @@ export const useMapStore = create<MapState>((set) => ({
   setElevationGrid: (elevationGrid) => set({ elevationGrid }),
   setMaterialBreakdown: (materialBreakdown) => set({ materialBreakdown }),
   setProspectReport: (prospectReport) => set({ prospectReport }),
+  setVegetation: (vegetation) => set({ vegetation }),
 
   setTrafficConfig: (patch) =>
     set((s) => ({ trafficConfig: { ...s.trafficConfig, ...patch } })),

@@ -26,7 +26,9 @@ Built with Next.js 16, React 19, CesiumJS, Three.js + React Three Fiber, MapLibr
 
 ### 🌐 Globe view (CesiumJS)
 - **Photorealistic** — Google Photorealistic 3D Tiles, streamed at high detail.
-- **Terrain + Buildings** — Cesium World Terrain (30 m, with water mask and normals) and Cesium OSM Buildings.
+- **Terrain + Buildings** — Cesium World Terrain (30 m, with water mask and normals) and Cesium OSM Buildings where an Ion token is set; **with no token at all** the globe falls back to the free AWS Terrain Tiles for relief and extrudes OSM footprints for the selected region, so it is never an empty sphere.
+- **Trees** from OSM, clamped to the terrain.
+- A **Data sources** panel names what is actually drawing, and which environment variable would upgrade each source — so a missing key is visible rather than silent.
 - Click any OSM building for its attributes (type, estimated height, levels, address, OSM id); click anywhere for coordinates and height.
 - Oblique fly-to of the selected region, region outline clamped to the ground, distance measurement with ground-clamped lines.
 - Vertical exaggeration and underground (translucent globe) camera.
@@ -44,6 +46,12 @@ Built with Next.js 16, React 19, CesiumJS, Three.js + React Three Fiber, MapLibr
 - Roofs are built to `roof:shape` — flat, gabled, hipped, pyramidal, skillion, dome, mansard, gambrel — on the footprint's oriented bounding box, with `roof:orientation` honoured.
 - `building:part` (Simple 3D Buildings) replaces the parent outline, so towers, podiums and setbacks come out right.
 - Everything is batched by material: a few thousand buildings cost a handful of draw calls.
+
+### 🌳 Vegetation
+- **Surveyed trees** (`natural=tree`) stand exactly where OSM puts them, with `height`, `circumference`, `species` and `leaf_type` read off the node. Where height is missing but girth is not, it comes from the trunk diameter via the usual allometric relation.
+- **Tree rows** (`natural=tree_row`) are stepped along their way at the mapped or a default spacing.
+- **Wooded areas** — `natural=wood`, `landuse=forest`, `leisure=park` and friends — have no individual trees in OSM, so trunks are scattered inside the polygon at a per-tag density (220/ha for woodland, 45/ha for a park) from a seeded RNG: the canopy outline is real, the individual trunks are generated, and the same region always regrows the same wood. The sidebar reports the split between surveyed, row and scattered.
+- Broadleaf, needleleaf, palm and shrub canopies, each one instanced mesh per class in the Terrain view and one billboard collection on the globe — a ten-thousand-tree forest costs a handful of draw calls.
 
 ### 🚗 Roads & traffic microsimulation
 - The drivable OSM network is parsed into a routable directed graph: ways split at every junction, `lanes` / `lanes:forward` / `lanes:backward`, `oneway`, `junction=roundabout`, `maxspeed` (including `mph`, `walk`, `none` and `XX:urban` implicits), bridges, tunnels and `layer`.
@@ -88,14 +96,14 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ### API keys
 
-Everything works without keys (2D map, terrain twin, satellite drape, buildings, geology). Two optional keys unlock the globe's best sources:
+**Every feature works with no API key at all** — both 3D views, terrain, satellite drape, buildings, roads, traffic, trees and geology all come from free, keyless sources. Two optional keys swap in higher-fidelity commercial data on the globe:
 
-| Variable | Unlocks | Where to get it |
-|---|---|---|
-| `NEXT_PUBLIC_CESIUM_ION_TOKEN` | Cesium World Terrain, Cesium OSM Buildings | https://ion.cesium.com/tokens (free tier) |
-| `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` | Google Photorealistic 3D Tiles | Google Cloud console → enable **Map Tiles API** for the key |
+| Variable | Unlocks | Without it | Where to get it |
+|---|---|---|---|
+| `NEXT_PUBLIC_CESIUM_ION_TOKEN` | Cesium World Terrain (30 m, water mask), Cesium OSM Buildings (global, pre-tiled) | AWS Terrain Tiles for relief; OSM footprints extruded for the selected region | https://ion.cesium.com/tokens (free tier) |
+| `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` | Google Photorealistic 3D Tiles — real captured mesh, including trees | The Cesium/OSM source | Google Cloud console → enable **Map Tiles API** for the key |
 
-Put them in `.env.local` locally, or in your hosting provider's environment settings. `NEXT_PUBLIC_*` values are inlined at build time, so redeploy after changing them.
+Put them in `.env.local` locally (start from `.env.example`), or in your hosting provider's environment settings. `NEXT_PUBLIC_*` values are inlined at build time, so redeploy after changing them. The globe's **Data sources** panel shows which one is live at any moment.
 
 ### Build & deploy
 
@@ -111,7 +119,8 @@ Deploys to Vercel with zero configuration: import the repository, add the two en
 ```bash
 npx tsc --noEmit
 npm run lint
-npm run check:sim   # behavioural checks for the simulation, geology and material logic
+npm run check:sim     # behavioural checks for the simulation, geology and material logic
+npm run check:scene   # building and vegetation pipelines, from Overpass response to geometry
 ```
 
 `check:sim` builds a synthetic street grid and asserts on behaviour rather than
@@ -120,6 +129,12 @@ identically, that signals cycle, that the network does not deadlock over a ten
 minute run, and that speed and flow follow a proper fundamental diagram. A
 traffic microsimulation fails quietly (the cars still move, only the numbers are
 wrong), so these are the checks that actually catch a regression.
+
+`check:scene` runs the real Overpass parsers against a stubbed `fetch` and the
+real mesh generators on the result, then asserts on what survives: the counts at
+each stage, that geometry lands inside the frame with the right handedness and
+scale, that scattered trees stay inside their polygon, and that the same region
+replays identically.
 
 ---
 
@@ -191,6 +206,7 @@ GeoVista mixes real data with models, and tries never to blur the line:
 | Terrain | SRTM elevation, Esri imagery | — |
 | Buildings | Footprints, heights, levels, and materials where OSM has them | Material, roof shape and covering where OSM is silent — labelled as inference, with a confidence score |
 | Roads | Geometry, lane counts, one-ways, speed limits, signals, roundabouts | — |
+| Trees | Surveyed trees and tree rows; the outline and tag of every wooded area | Individual trunks inside a wooded area — scattered at a per-tag density, labelled as scattered and counted separately |
 | Traffic | — | **Everything.** Vehicles, demand and routes are synthetic. The network they drive on is real; the traffic on it is not a measurement of anything |
 | Geology | Macrostrat stratigraphic column and lithology | — |
 | Subsurface targets | — | **Everything.** Scores are derived from rock type and depth alone, with no seismic, well, geochemical or water-level data. A screening indicator, not a survey |

@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "prebuild": "node scripts/copy-cesium.mjs",
-    "check:sim": "tsx scripts/check-simulation.ts"
+    "check:sim": "tsx scripts/check-simulation.ts",
+    "check:scene": "tsx scripts/check-scene.ts"
   },
   "dependencies": {
     "@react-three/drei": "^10.7.7",

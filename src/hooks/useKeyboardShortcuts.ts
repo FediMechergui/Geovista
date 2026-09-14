@@ -92,6 +92,12 @@ export function useKeyboardShortcuts(onToggleHelp: () => void) {
           store.toggleLayer("roads");
           break;
 
+        case "v":
+        case "V":
+          e.preventDefault();
+          store.toggleLayer("trees");
+          break;
+
         case "?":
           e.preventDefault();
           onToggleHelp();

@@ -51,6 +51,8 @@ export interface LayerVisibility {
   traffic: boolean;
   /** Highlighted aquifer / hydrocarbon target intervals in the geology stack. */
   prospect: boolean;
+  /** OSM trees, tree rows and wooded areas. */
+  trees: boolean;
 }
 
 /** Reverse-geocoded identity of the selected region. */
@@ -70,6 +72,8 @@ export interface RegionStats {
   buildingCount: number;
   /** Drivable centreline length of the loaded road network, kilometres. */
   roadLengthKm: number;
+  /** Trees placed from OSM — surveyed, stepped along rows, and scattered. */
+  treeCount: number;
 }
 
 /** One-shot camera request for the 2D map (nonce forces re-trigger). */
