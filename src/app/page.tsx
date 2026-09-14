@@ -15,6 +15,7 @@ import Attribution from "@/components/ui/Attribution";
 import HelpPanel from "@/components/ui/HelpPanel";
 import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { usePlaceIdentity } from "@/hooks/usePlaceIdentity";
+import { useQuietAbortErrors } from "@/hooks/useQuietAbortErrors";
 
 /* ------------------------------------------------------------------ */
 /*  Dynamic imports — heavy libs only on the client, no SSR            */
@@ -50,6 +51,7 @@ export default function Home() {
 
   useKeyboardShortcuts(toggleHelp);
   usePlaceIdentity();
+  useQuietAbortErrors();
 
   // The globe works without a region; the terrain twin needs one.
   const show3D = is3DActive && (viewerMode === "globe" || !!selectedRegion);
