@@ -11,6 +11,8 @@ import {
   Download,
   HelpCircle,
   Search,
+  TrafficCone,
+  Droplets,
 } from "lucide-react";
 
 export default function HelpPanel({ onClose }: { onClose: () => void }) {
@@ -48,9 +50,25 @@ export default function HelpPanel({ onClose }: { onClose: () => void }) {
           <SectionTitle icon={<Mountain size={14} />} title="Terrain view" />
           <ul className="mb-4 space-y-1 text-xs text-zinc-400">
             <li><b className="text-zinc-300">Surface</b> — satellite imagery, OSM land use, or elevation tint.</li>
-            <li><b className="text-zinc-300">Buildings</b> — OSM footprints extruded and seated on the terrain.</li>
+            <li><b className="text-zinc-300">Buildings</b> — OSM footprints with the real facade material, roof shape and roof covering where OSM has them, inferred from use and age where it does not.</li>
             <li><b className="text-zinc-300">Geology</b> — Macrostrat layers below the surface; enable Underground camera to look beneath.</li>
             <li><b className="text-zinc-300">Measure</b> — ruler tool: click two points for distance and an elevation profile.</li>
+            <li><b className="text-zinc-300">Route</b> — navigation tool: click two points for the fastest drivable path, with free-flow and with-traffic times.</li>
+          </ul>
+
+          <SectionTitle icon={<TrafficCone size={14} />} title="Traffic simulation" />
+          <ul className="mb-4 space-y-1 text-xs text-zinc-400">
+            <li>Vehicles follow the real OSM road network — lane counts, one-way streets, speed limits, roundabouts and signalised junctions all come from the map.</li>
+            <li>Car-following uses the Intelligent Driver Model, so queues, stop-and-go waves and signal discharge emerge rather than being scripted.</li>
+            <li><b className="text-zinc-300">Level of service</b> — roads are coloured A (free flow) to F (breakdown) by the ratio of simulated speed to the posted limit. The letter is shown alongside the colour everywhere.</li>
+            <li>The demand is synthetic. Reseeding replays a different, equally reproducible run; the same seed always gives the same traffic.</li>
+          </ul>
+
+          <SectionTitle icon={<Droplets size={14} />} title="Subsurface targets" />
+          <ul className="mb-4 space-y-1 text-xs text-zinc-400">
+            <li>Each Macrostrat unit is classified by rock type and scored for <b className="text-zinc-300">aquifer</b> potential (porosity, permeability, thickness, confinement) and for the <b className="text-zinc-300">petroleum-system</b> elements (source, maturity, reservoir, seal, trap).</li>
+            <li>This is a <b className="text-zinc-300">screening indicator from lithology alone</b>. There is no seismic, no well log, no geochemistry and no water-level data behind it. Trap geometry in particular cannot be seen from a stratigraphic column, so hydrocarbon scores are capped.</li>
+            <li>It shows where a geologist would look next — never that water or hydrocarbons are present.</li>
           </ul>
 
           <SectionTitle icon={<Keyboard size={14} />} title="Keyboard shortcuts" />
@@ -62,6 +80,8 @@ export default function HelpPanel({ onClose }: { onClose: () => void }) {
               ["2", "3D view"],
               ["G", "Globe ↔ Terrain"],
               ["B", "Cycle 2D basemap"],
+              ["T", "Toggle the traffic simulation"],
+              ["R", "Toggle the road network"],
               ["?", "Toggle this panel"],
             ]}
           />
@@ -69,7 +89,10 @@ export default function HelpPanel({ onClose }: { onClose: () => void }) {
           <SectionTitle icon={<Layers size={14} />} title="Layers" />
           <ul className="mb-4 space-y-1 text-xs text-zinc-400">
             <li><b className="text-zinc-300">Buildings</b> — OSM footprints (terrain) / Cesium OSM Buildings (globe)</li>
+            <li><b className="text-zinc-300">Roads</b> — OSM drivable network, drawn to its real lane count</li>
+            <li><b className="text-zinc-300">Traffic</b> — the vehicle microsimulation; turning it on turns Roads on</li>
             <li><b className="text-zinc-300">Geology</b> — Macrostrat stratigraphic column, also shown in the sidebar</li>
+            <li><b className="text-zinc-300">Subsurface targets</b> — scored aquifer / hydrocarbon intervals inside the geology stack</li>
             <li><b className="text-zinc-300">Sea level</b> — translucent water plane at 0 m</li>
           </ul>
 
@@ -82,6 +105,8 @@ export default function HelpPanel({ onClose }: { onClose: () => void }) {
             <li><b className="text-zinc-300">PNG</b> — screenshot of the current 3D view</li>
             <li><b className="text-zinc-300">CSV</b> — elevation grid (lon, lat, elevation) once terrain has loaded</li>
             <li><b className="text-zinc-300">GeoJSON</b> — selected region polygon</li>
+            <li><b className="text-zinc-300">Congestion</b> — every road link with its simulated speed, density, flow and level of service</li>
+            <li><b className="text-zinc-300">Subsurface screening</b> — every scored interval with its evidence and its caveats</li>
           </ul>
         </div>
 

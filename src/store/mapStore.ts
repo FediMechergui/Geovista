@@ -12,6 +12,19 @@ import type {
   ElevationGrid,
 } from '@/types/geo';
 import type { GeologicalColumn } from '@/types/geology';
+import type { MaterialBreakdown } from '@/types/buildings';
+import type { ProspectivityReport } from '@/types/subsurface';
+import type { SimConfig, TrafficStats } from '@/types/traffic';
+import { DEFAULT_SIM_CONFIG, EMPTY_TRAFFIC_STATS } from '@/types/traffic';
+
+/** Whether the traffic simulation is running, and how it is displayed. */
+export interface TrafficUiState {
+  running: boolean;
+  /** Colour the road ribbons by level of service instead of by road class. */
+  showCongestion: boolean;
+  /** Draw the signal heads. */
+  showSignals: boolean;
+}
 
 interface MapState {
   /* ---- 2D map ---- */
@@ -38,6 +51,17 @@ interface MapState {
   regionStats: RegionStats | null;
   geologyColumn: GeologicalColumn | null;
   elevationGrid: ElevationGrid | null;
+  materialBreakdown: MaterialBreakdown | null;
+  prospectReport: ProspectivityReport | null;
+
+  /* ---- Traffic ---- */
+  trafficConfig: SimConfig;
+  trafficUi: TrafficUiState;
+  trafficStats: TrafficStats;
+  /** Set while the road network is being fetched and built. */
+  trafficLoading: boolean;
+  /** Non-null when the network could not be loaded for this region. */
+  trafficError: string | null;
 
   /* ---- Actions ---- */
   setCenter: (c: [number, number]) => void;
@@ -60,7 +84,27 @@ interface MapState {
   setRegionStats: (s: RegionStats | null) => void;
   setGeologyColumn: (c: GeologicalColumn | null) => void;
   setElevationGrid: (g: ElevationGrid | null) => void;
+  setMaterialBreakdown: (b: MaterialBreakdown | null) => void;
+  setProspectReport: (r: ProspectivityReport | null) => void;
+
+  setTrafficConfig: (patch: Partial<SimConfig>) => void;
+  setTrafficUi: (patch: Partial<TrafficUiState>) => void;
+  setTrafficStats: (s: TrafficStats) => void;
+  setTrafficLoading: (loading: boolean) => void;
+  setTrafficError: (error: string | null) => void;
 }
+
+/** Everything derived from the selected region, cleared when it changes. */
+const CLEARED_REGION_DATA = {
+  placeInfo: null,
+  regionStats: null,
+  geologyColumn: null,
+  elevationGrid: null,
+  materialBreakdown: null,
+  prospectReport: null,
+  trafficStats: EMPTY_TRAFFIC_STATS,
+  trafficError: null,
+} as const;
 
 export const useMapStore = create<MapState>((set) => ({
   center: [10, 34],
@@ -78,6 +122,9 @@ export const useMapStore = create<MapState>((set) => ({
     buildings: true,
     geology: false,
     water: true,
+    roads: true,
+    traffic: false,
+    prospect: false,
   },
   verticalExaggeration: 1.0,
   underground: false,
@@ -87,6 +134,14 @@ export const useMapStore = create<MapState>((set) => ({
   regionStats: null,
   geologyColumn: null,
   elevationGrid: null,
+  materialBreakdown: null,
+  prospectReport: null,
+
+  trafficConfig: DEFAULT_SIM_CONFIG,
+  trafficUi: { running: true, showCongestion: true, showSignals: true },
+  trafficStats: EMPTY_TRAFFIC_STATS,
+  trafficLoading: false,
+  trafficError: null,
 
   setCenter: (center) => set({ center }),
   setZoom: (zoom) => set({ zoom }),
@@ -98,20 +153,20 @@ export const useMapStore = create<MapState>((set) => ({
     })),
 
   // Changing the region invalidates everything derived from it.
-  setSelectedRegion: (bbox) =>
-    set({
-      selectedRegion: bbox,
-      placeInfo: null,
-      regionStats: null,
-      geologyColumn: null,
-      elevationGrid: null,
-    }),
+  setSelectedRegion: (bbox) => set({ selectedRegion: bbox, ...CLEARED_REGION_DATA }),
   setSelectionMode: (mode) => set({ selectionMode: mode }),
 
   set3DActive: (active) => set({ is3DActive: active }),
   setViewerMode: (viewerMode) => set({ viewerMode }),
   toggleLayer: (layer) =>
-    set((s) => ({ layers: { ...s.layers, [layer]: !s.layers[layer] } })),
+    set((s) => {
+      const layers = { ...s.layers, [layer]: !s.layers[layer] };
+      // Traffic needs roads: turning traffic on turns roads on with it.
+      if (layer === 'traffic' && layers.traffic) layers.roads = true;
+      // Prospect zones live inside the geology stack.
+      if (layer === 'prospect' && layers.prospect) layers.geology = true;
+      return { layers };
+    }),
   setVerticalExaggeration: (v) => set({ verticalExaggeration: v }),
   setUnderground: (u) => set({ underground: u }),
   setTerrainTexture: (terrainTexture) => set({ terrainTexture }),
@@ -120,4 +175,13 @@ export const useMapStore = create<MapState>((set) => ({
   setRegionStats: (regionStats) => set({ regionStats }),
   setGeologyColumn: (geologyColumn) => set({ geologyColumn }),
   setElevationGrid: (elevationGrid) => set({ elevationGrid }),
+  setMaterialBreakdown: (materialBreakdown) => set({ materialBreakdown }),
+  setProspectReport: (prospectReport) => set({ prospectReport }),
+
+  setTrafficConfig: (patch) =>
+    set((s) => ({ trafficConfig: { ...s.trafficConfig, ...patch } })),
+  setTrafficUi: (patch) => set((s) => ({ trafficUi: { ...s.trafficUi, ...patch } })),
+  setTrafficStats: (trafficStats) => set({ trafficStats }),
+  setTrafficLoading: (trafficLoading) => set({ trafficLoading }),
+  setTrafficError: (trafficError) => set({ trafficError }),
 }));

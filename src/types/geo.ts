@@ -45,6 +45,12 @@ export interface LayerVisibility {
   buildings: boolean;
   geology: boolean;
   water: boolean;
+  /** OSM road network draped on the terrain / clamped to the globe. */
+  roads: boolean;
+  /** Vehicle microsimulation driving on the road network. */
+  traffic: boolean;
+  /** Highlighted aquifer / hydrocarbon target intervals in the geology stack. */
+  prospect: boolean;
 }
 
 /** Reverse-geocoded identity of the selected region. */
@@ -62,6 +68,8 @@ export interface RegionStats {
   meanElev: number;
   demResolutionM: number;
   buildingCount: number;
+  /** Drivable centreline length of the loaded road network, kilometres. */
+  roadLengthKm: number;
 }
 
 /** One-shot camera request for the 2D map (nonce forces re-trigger). */

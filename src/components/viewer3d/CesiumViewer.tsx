@@ -10,6 +10,10 @@
  *   3. Cesium OSM Buildings — worldwide extruded buildings with OSM metadata.
  *   4. Esri World Imagery — satellite basemap, no key.
  *
+ * On top of those sit the OSM road network and the traffic microsimulation —
+ * the *same* simulation instance the Terrain view drives, so switching between
+ * the two never restarts the city.
+ *
  * The Cesium Viewer is driven imperatively: React owns the container and the
  * overlay UI, Cesium owns the scene.
  */
@@ -45,17 +49,31 @@ import {
 import { useMapStore } from '@/store/mapStore';
 import { geodesicDistance } from '@/lib/analysis/coordTransform';
 import {
+  ensureTrafficSession,
+  type TrafficSession,
+} from '@/lib/traffic/trafficService';
+import {
+  createCesiumRoadLayer,
+  createCesiumVehicleLayer,
+  type CesiumRoadLayer,
+  type CesiumVehicleLayer,
+} from '@/lib/traffic/cesiumTraffic';
+import TrafficPanel from '@/components/traffic/TrafficPanel';
+import {
   CESIUM_BASE_URL,
   CESIUM_ION_TOKEN,
   GOOGLE_MAPS_API_KEY,
   TILE_URLS,
 } from '@/lib/constants';
 import type { BBox } from '@/types/geo';
-import { Ruler, X, Trash2, Loader2, Globe2, Box, Building2, MapPin } from 'lucide-react';
+import { Ruler, X, Trash2, Loader2, Globe2, Box, Building2, MapPin, TrafficCone } from 'lucide-react';
 
 /* ================================================================== */
 /*  Module setup (client only — this file is dynamically imported)     */
 /* ================================================================== */
+
+/** How often the congestion colours and the stats panel refresh, ms. */
+const STATS_REFRESH_MS = 2000;
 
 const HAS_ION = CESIUM_ION_TOKEN.length > 0;
 const HAS_GOOGLE = GOOGLE_MAPS_API_KEY.length > 0;
@@ -159,8 +177,13 @@ export default function CesiumViewer() {
   const verticalExaggeration = useMapStore((s) => s.verticalExaggeration);
   const underground = useMapStore((s) => s.underground);
   const regionStats = useMapStore((s) => s.regionStats);
+  const trafficConfig = useMapStore((s) => s.trafficConfig);
+  const trafficUi = useMapStore((s) => s.trafficUi);
   const set3DActive = useMapStore((s) => s.set3DActive);
   const setCursorCoord = useMapStore((s) => s.setCursorCoord);
+  const setTrafficStats = useMapStore((s) => s.setTrafficStats);
+  const setTrafficLoading = useMapStore((s) => s.setTrafficLoading);
+  const setTrafficError = useMapStore((s) => s.setTrafficError);
 
   /* ---- Refs ---- */
   const containerRef = useRef<HTMLDivElement>(null);
@@ -172,6 +195,10 @@ export default function CesiumViewer() {
   const highlightRef = useRef<{ feature: Cesium3DTileFeature; color: Color } | null>(null);
   const measureModeRef = useRef(false);
   const lastMoveRef = useRef(0);
+  const roadLayerRef = useRef<CesiumRoadLayer | null>(null);
+  const vehicleLayerRef = useRef<CesiumVehicleLayer | null>(null);
+  /** Read by the per-frame listener, which must not re-subscribe on each change. */
+  const trafficUiRef = useRef(trafficUi);
 
   /* ---- State ---- */
   const [ready, setReady] = useState(false);
@@ -182,10 +209,16 @@ export default function CesiumViewer() {
   const [measureMode, setMeasureMode] = useState(false);
   const [measurePoints, setMeasurePoints] = useState<MeasurePoint[]>([]);
   const [featureInfo, setFeatureInfo] = useState<FeatureInfo | null>(null);
+  const [session, setSession] = useState<TrafficSession | null>(null);
+  const [trafficPanelOpen, setTrafficPanelOpen] = useState(false);
 
   useEffect(() => {
     measureModeRef.current = measureMode;
   }, [measureMode]);
+
+  useEffect(() => {
+    trafficUiRef.current = trafficUi;
+  }, [trafficUi]);
 
   /* ================================================================ */
   /*  Viewer lifecycle                                                 */
@@ -386,6 +419,112 @@ export default function CesiumViewer() {
     viewer.scene.globe.translucency.enabled = underground;
     viewer.scene.globe.translucency.frontFaceAlpha = underground ? 0.45 : 1.0;
   }, [ready, underground]);
+
+  /* ================================================================ */
+  /*  Road network + traffic simulation                                */
+  /* ================================================================ */
+
+  useEffect(() => {
+    if (!ready || !selectedRegion || !layers.roads) {
+      setSession(null);
+      return;
+    }
+    const ac = new AbortController();
+    setTrafficLoading(true);
+    setTrafficError(null);
+
+    ensureTrafficSession(selectedRegion, trafficConfig, ac.signal)
+      .then((loaded) => {
+        if (ac.signal.aborted) return;
+        setSession(loaded);
+        if (!loaded) setTrafficError('No drivable road mapped in this region.');
+      })
+      .catch((err) => {
+        if (ac.signal.aborted) return;
+        console.warn('[CesiumViewer] road network failed:', err);
+        setSession(null);
+        setTrafficError(err instanceof Error ? err.message : 'Road network failed to load');
+      })
+      .finally(() => {
+        if (!ac.signal.aborted) setTrafficLoading(false);
+      });
+
+    return () => ac.abort();
+    // Config changes are pushed to the live simulation below, not refetched.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, selectedRegion, layers.roads, setTrafficLoading, setTrafficError]);
+
+  useEffect(() => {
+    session?.simulation.setConfig(trafficConfig);
+  }, [session, trafficConfig]);
+
+  /* ---- Road polylines ---- */
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!ready || !viewer || !session || !layers.roads) return;
+
+    const layer = createCesiumRoadLayer(
+      viewer,
+      session.graph,
+      session.simulation.edgeStats(),
+      trafficUi.showCongestion && layers.traffic,
+    );
+    roadLayerRef.current = layer;
+
+    return () => {
+      roadLayerRef.current = null;
+      layer.destroy();
+    };
+  }, [ready, session, layers.roads, layers.traffic, trafficUi.showCongestion]);
+
+  /* ---- Vehicles ---- */
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!ready || !viewer || !session || !layers.traffic) return;
+
+    const layer = createCesiumVehicleLayer(viewer, session.graph);
+    vehicleLayerRef.current = layer;
+
+    return () => {
+      vehicleLayerRef.current = null;
+      layer.destroy();
+    };
+  }, [ready, session, layers.traffic]);
+
+  /* ---- The per-frame tick ---- */
+
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    if (!ready || !viewer || !session || !layers.traffic) return;
+
+    const { simulation } = session;
+    let last = performance.now();
+    let lastStats = last;
+
+    const onPreRender = () => {
+      const now = performance.now();
+      const delta = Math.min(0.5, (now - last) / 1000);
+      last = now;
+
+      if (trafficUiRef.current.running) simulation.step(delta);
+      vehicleLayerRef.current?.update(simulation.poses());
+
+      if (now - lastStats < STATS_REFRESH_MS) return;
+      lastStats = now;
+      roadLayerRef.current?.refresh(
+        simulation.edgeStats(),
+        trafficUiRef.current.showCongestion,
+      );
+      setTrafficStats(simulation.stats());
+    };
+
+    viewer.scene.preRender.addEventListener(onPreRender);
+    return () => {
+      if (!viewer.isDestroyed()) viewer.scene.preRender.removeEventListener(onPreRender);
+    };
+  }, [ready, session, layers.traffic, setTrafficStats]);
 
   /* ================================================================ */
   /*  Input: click (measure / pick) and hover (coords)                 */
@@ -597,7 +736,27 @@ export default function CesiumViewer() {
             <Trash2 size={16} />
           </IconBtn>
         )}
+        <IconBtn
+          title="Traffic simulation"
+          active={trafficPanelOpen}
+          onClick={() => setTrafficPanelOpen((o) => !o)}
+        >
+          <TrafficCone size={16} />
+        </IconBtn>
       </div>
+
+      {/* ---------- Traffic panel ---------- */}
+      {trafficPanelOpen && (
+        <div className="absolute bottom-16 left-3 max-h-[70%] w-60 overflow-y-auto rounded-xl bg-zinc-900/95 p-3 text-zinc-200 shadow-lg backdrop-blur-md">
+          <TrafficPanel compact />
+          {session && (
+            <p className="mt-2 text-[10px] leading-snug text-zinc-600">
+              {(session.graph.totalLengthM / 1000).toFixed(1)} km of road ·{' '}
+              {session.graph.edges.size.toLocaleString()} segments
+            </p>
+          )}
+        </div>
+      )}
 
       {/* ---------- Top-center: source switch ---------- */}
       <div className="absolute left-1/2 top-3 flex -translate-x-1/2 rounded-lg bg-zinc-900/90 p-0.5 shadow-lg backdrop-blur-md">
@@ -702,6 +861,9 @@ export default function CesiumViewer() {
         )}
         {!googleActive && buildingsStatus === 'ready' && layers.buildings && (
           <Badge color="bg-orange-600/85" Icon={Building2} label="Cesium OSM Buildings" />
+        )}
+        {layers.traffic && session && (
+          <Badge color="bg-sky-600/85" Icon={TrafficCone} label="Live traffic simulation" />
         )}
         {!HAS_ION && !googleActive && (
           <Badge color="bg-zinc-700/90" Icon={Globe2} label="Add a Cesium Ion token for terrain & buildings" />

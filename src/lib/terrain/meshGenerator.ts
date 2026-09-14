@@ -1,5 +1,8 @@
 /**
- * Three.js mesh generators for terrain, geology, and buildings.
+ * Three.js mesh generators for the terrain surface and the geology stack.
+ *
+ * Buildings live in `@/lib/buildings/buildingMesh`, which needs per-material
+ * batching and real-world UVs that do not belong in a terrain module.
  *
  * ## Coordinate system
  *
@@ -15,13 +18,12 @@
  */
 
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import type { BBox, ElevationGrid } from '@/types/geo';
+import type { ElevationGrid } from '@/types/geo';
 import type { GeologyLayerDef } from '@/types/geology';
-import type { BuildingData } from '@/types/buildings';
+import type { ProspectZone } from '@/types/subsurface';
 import { HYPSOMETRIC_STOPS } from '@/lib/constants';
-import { estimateBuildingHeight } from '@/lib/buildings/osmFetcher';
 import { sampleGridPixel } from '@/lib/terrain/demLoader';
+import { zoneColor } from '@/lib/geology/prospectivity';
 
 // ---------- Shared constants -----------------------------------------------
 
@@ -226,161 +228,6 @@ export function generateGeologyLayers(
   return group;
 }
 
-// ---------- 3. Building meshes ---------------------------------------------
-
-/** Facade colors by OSM building type; unknown types fall back to `yes`. */
-const BUILDING_COLORS: Record<string, string> = {
-  yes: '#d9d4c7',
-  house: '#e3d6c4',
-  detached: '#e3d6c4',
-  residential: '#dccbb4',
-  apartments: '#cfc6bb',
-  commercial: '#c9ccd1',
-  office: '#b9c3cc',
-  retail: '#d6c8b8',
-  industrial: '#bcbfc2',
-  warehouse: '#b8bbbe',
-  school: '#e0d2a8',
-  university: '#dccfa8',
-  hospital: '#e6dede',
-  church: '#d8cfc0',
-  cathedral: '#d0c6b4',
-  mosque: '#e0dbcf',
-  hotel: '#d4c8c0',
-  garage: '#c4c4c4',
-  shed: '#c8bfae',
-  roof: '#c0c0c0',
-};
-
-/** Deterministic small tint so adjacent buildings don't look identical. */
-function jitter(id: number): number {
-  const x = Math.sin(id * 12.9898) * 43758.5453;
-  return (x - Math.floor(x)) * 0.16 - 0.08; // [-0.08, +0.08]
-}
-
-export interface BuildingMeshOptions {
-  /** Ground elevation sampler (meters). Buildings sit on the lowest footprint vertex. */
-  elevationAt?: (lon: number, lat: number) => number | null;
-  /** Fallback ground elevation when the sampler has no data. */
-  groundElevation?: number;
-}
-
-/**
- * Generate extruded 3D buildings from OSM footprints, merged into a single
- * mesh with per-building vertex colors (one draw call for thousands of
- * buildings). Each building is seated on the terrain at its lowest footprint
- * vertex and extended downward so it never floats on slopes.
- */
-export function generateBuildingMeshes(
-  buildings: BuildingData[],
-  bbox: BBox,
-  { elevationAt, groundElevation = 0 }: BuildingMeshOptions = {},
-): THREE.Group {
-  const group = new THREE.Group();
-  group.userData = { type: 'building-stack', count: 0 };
-  if (buildings.length === 0) return group;
-
-  const centerLon = (bbox.west + bbox.east) / 2;
-  const centerLat = (bbox.south + bbox.north) / 2;
-  const cosLat = Math.cos((centerLat * Math.PI) / 180);
-
-  const geometries: THREE.BufferGeometry[] = [];
-  const color = new THREE.Color();
-
-  for (const building of buildings) {
-    const coords = stripClosingPoint(building.geometry);
-    if (coords.length < 3) continue;
-
-    const heightM = estimateBuildingHeight(building.properties);
-    if (!Number.isFinite(heightM) || heightM <= 0) continue;
-
-    // Ground: lowest footprint vertex; extend the extrusion by the vertical
-    // spread so the top stays flat and the base is buried on slopes.
-    let base = Infinity;
-    let top = -Infinity;
-    if (elevationAt) {
-      for (const [lon, lat] of coords) {
-        const e = elevationAt(lon, lat);
-        if (e === null) continue;
-        if (e < base) base = e;
-        if (e > top) top = e;
-      }
-    }
-    if (!Number.isFinite(base)) {
-      base = groundElevation;
-      top = groundElevation;
-    }
-    const spread = Math.min(top - base, 60);
-
-    const shape = new THREE.Shape();
-    for (let i = 0; i < coords.length; i++) {
-      const [lon, lat] = coords[i];
-      const x = (lon - centerLon) * cosLat;
-      const y = lat - centerLat;
-      if (i === 0) shape.moveTo(x, y);
-      else shape.lineTo(x, y);
-    }
-    shape.closePath();
-
-    const geometry = new THREE.ExtrudeGeometry(shape, {
-      depth: (heightM + spread) * DEG_PER_M,
-      bevelEnabled: false,
-      steps: 1,
-    });
-    geometry.translate(0, 0, base * DEG_PER_M);
-
-    // Per-building color
-    const type = building.properties.type ?? 'yes';
-    color.set(BUILDING_COLORS[type] ?? BUILDING_COLORS.yes);
-    color.offsetHSL(0, 0, jitter(building.id));
-    const n = geometry.attributes.position.count;
-    const colors = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      colors[i * 3] = color.r;
-      colors[i * 3 + 1] = color.g;
-      colors[i * 3 + 2] = color.b;
-    }
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.deleteAttribute('uv');
-
-    geometries.push(geometry);
-  }
-
-  if (geometries.length === 0) return group;
-
-  const merged = mergeGeometries(geometries, false);
-  for (const g of geometries) g.dispose();
-  if (!merged) return group;
-
-  const material = new THREE.MeshStandardMaterial({
-    vertexColors: true,
-    flatShading: true,
-    roughness: 0.85,
-    metalness: 0.05,
-    side: THREE.DoubleSide, // OSM rings may be CW or CCW
-  });
-
-  const mesh = new THREE.Mesh(merged, material);
-  mesh.rotation.x = -Math.PI / 2;
-  mesh.castShadow = true;
-  mesh.receiveShadow = true;
-  mesh.userData = { type: 'buildings', count: geometries.length };
-
-  group.userData.count = geometries.length;
-  group.add(mesh);
-  return group;
-}
-
-/** OSM rings repeat the first vertex as the last; `THREE.Shape` wants it open. */
-function stripClosingPoint(
-  coords: Array<[number, number]>,
-): Array<[number, number]> {
-  if (coords.length < 2) return coords;
-  const [fx, fy] = coords[0];
-  const [lx, ly] = coords[coords.length - 1];
-  return fx === lx && fy === ly ? coords.slice(0, -1) : coords;
-}
-
 /** Dispose every geometry and material under an object. */
 export function disposeObject(obj: THREE.Object3D | null | undefined): void {
   if (!obj) return;
@@ -391,8 +238,112 @@ export function disposeObject(obj: THREE.Object3D | null | undefined): void {
       for (const m of mats) {
         const mat = m as THREE.MeshStandardMaterial;
         mat.map?.dispose();
+        mat.emissiveMap?.dispose();
+        mat.normalMap?.dispose();
+        mat.roughnessMap?.dispose();
         mat.dispose();
       }
     }
   });
+}
+
+// ---------- 3. Subsurface prospect zones -----------------------------------
+
+/**
+ * Highlight the scored aquifer / hydrocarbon intervals inside the geology
+ * stack.
+ *
+ * Each zone becomes a slab that follows the terrain surface, offset down to
+ * its depth range: a translucent top and bottom face plus a wireframe cage, so
+ * it reads as a *highlighted interval in the column* rather than as a mapped
+ * body of water or oil — which is exactly the distinction the scores make.
+ */
+export function generateProspectVolumes(
+  surfaceGrid: ElevationGrid,
+  zones: ProspectZone[],
+  opacity = 0.34,
+): THREE.Group {
+  const group = new THREE.Group();
+  group.userData = { type: 'prospect-stack', count: zones.length };
+  if (zones.length === 0) return group;
+
+  const { width, height, bbox } = surfaceGrid;
+  const wSeg = Math.min(width - 1, 64);
+  const hSeg = Math.min(height - 1, 64);
+  const vertsPerRow = wSeg + 1;
+
+  const midLat = (bbox.north + bbox.south) / 2;
+  const cosLat = Math.cos((midLat * Math.PI) / 180);
+  const meshWidth = (bbox.east - bbox.west) * cosLat;
+  const meshHeight = bbox.north - bbox.south;
+
+  const stepW = (width - 1) / wSeg;
+  const stepH = (height - 1) / hSeg;
+
+  /** A surface-following sheet at a fixed depth below ground. */
+  const sheetAt = (depth: number): THREE.PlaneGeometry => {
+    const geometry = new THREE.PlaneGeometry(meshWidth, meshHeight, wSeg, hSeg);
+    const positions = geometry.attributes.position;
+    for (let i = 0; i < positions.count; i++) {
+      const row = Math.floor(i / vertsPerRow);
+      const col = i % vertsPerRow;
+      const surface = sampleGridPixel(surfaceGrid, col * stepW, row * stepH) ?? 0;
+      positions.setZ(i, (surface - depth) * DEG_PER_M);
+    }
+    positions.needsUpdate = true;
+    geometry.computeVertexNormals();
+    return geometry;
+  };
+
+  for (const zone of zones) {
+    const color = new THREE.Color(zoneColor(zone));
+    // Weak zones are drawn fainter, so the strong ones read first.
+    const alpha = opacity * (0.45 + zone.score * 0.55);
+
+    for (const depth of [zone.depthTop, zone.depthBottom]) {
+      const mesh = new THREE.Mesh(
+        sheetAt(depth),
+        new THREE.MeshStandardMaterial({
+          color,
+          emissive: color,
+          emissiveIntensity: 0.22,
+          transparent: true,
+          opacity: alpha,
+          side: THREE.DoubleSide,
+          roughness: 0.85,
+          depthWrite: false,
+        }),
+      );
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.renderOrder = 10 - depth * 0.001;
+      mesh.userData = {
+        type: 'prospect-zone',
+        id: zone.id,
+        kind: zone.kind,
+        title: zone.title,
+        score: zone.score,
+        depthTop: zone.depthTop,
+        depthBottom: zone.depthBottom,
+      };
+      group.add(mesh);
+    }
+
+    // A cage around the interval makes the top and bottom read as one body.
+    const cage = new THREE.Mesh(
+      sheetAt((zone.depthTop + zone.depthBottom) / 2),
+      new THREE.MeshBasicMaterial({
+        color,
+        wireframe: true,
+        transparent: true,
+        opacity: alpha * 0.5,
+        depthWrite: false,
+      }),
+    );
+    cage.rotation.x = -Math.PI / 2;
+    cage.renderOrder = 11;
+    cage.userData = { type: 'prospect-cage', id: zone.id };
+    group.add(cage);
+  }
+
+  return group;
 }

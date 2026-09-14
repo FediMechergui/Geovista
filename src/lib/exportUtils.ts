@@ -1,8 +1,13 @@
 /**
- * Export utilities: PNG screenshot, CSV elevation, GeoJSON region.
+ * Export utilities: PNG screenshot, CSV elevation, GeoJSON region,
+ * GeoJSON congestion, CSV prospectivity report.
  */
 
 import type { BBox, ElevationGrid } from "@/types/geo";
+import type { EdgeStats, RoadGraph } from "@/types/traffic";
+import type { ProspectivityReport } from "@/types/subsurface";
+import { congestionGeoJSON } from "@/lib/traffic/analytics";
+import { PROSPECT_DISCLAIMER } from "@/lib/geology/prospectivity";
 
 /* ================================================================== */
 /*  1. Screenshot (PNG)                                                */
@@ -122,4 +127,80 @@ function downloadText(content: string, filename: string, mime: string): void {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+/* ================================================================== */
+/*  4. Traffic congestion GeoJSON                                      */
+/* ================================================================== */
+
+/**
+ * Export the road network with its current simulated congestion measures
+ * as GeoJSON — speed, density, flow and level of service per link.
+ */
+export function exportCongestionGeoJSON(
+  graph: RoadGraph,
+  stats: Map<number, EdgeStats>,
+): void {
+  const collection = congestionGeoJSON(graph, stats);
+  downloadText(
+    JSON.stringify(collection, null, 2),
+    `geovista-congestion-${timestamp()}.geojson`,
+    "application/geo+json",
+  );
+}
+
+/* ================================================================== */
+/*  5. Subsurface prospectivity report                                 */
+/* ================================================================== */
+
+/**
+ * Export the prospectivity screening as CSV — one row per scored interval,
+ * with the evidence and the caveats carried along so the numbers are never
+ * separated from what qualifies them.
+ */
+export function exportProspectivityCSV(report: ProspectivityReport): void {
+  const header = [
+    "kind",
+    "unit",
+    "lithology",
+    "depth_top_m",
+    "depth_bottom_m",
+    "score_0_1",
+    "confidence",
+    "evidence",
+    "caveats",
+  ].join(",");
+
+  const rows = [...report.aquifers, ...report.hydrocarbons].map((zone) =>
+    [
+      zone.kind,
+      csvCell(zone.unitName),
+      zone.lithology,
+      zone.depthTop.toFixed(1),
+      zone.depthBottom.toFixed(1),
+      zone.score.toFixed(3),
+      zone.confidence,
+      csvCell(zone.evidence.join(" | ")),
+      csvCell(zone.caveats.join(" | ")),
+    ].join(","),
+  );
+
+  const preamble = [
+    `# GeoVista subsurface prospectivity screening`,
+    `# Column: ${csvCell(report.columnName)} (Macrostrat ${report.columnId}) at ${report.lat.toFixed(4)}, ${report.lng.toFixed(4)}`,
+    `# Estimated water table: ${report.waterTableDepth === null ? "n/a" : `${report.waterTableDepth.toFixed(0)} m`}`,
+    `# Assumed geothermal gradient: ${report.geothermalGradient} C/km`,
+    `# ${PROSPECT_DISCLAIMER}`,
+  ].join("\n");
+
+  downloadText(
+    `${preamble}\n${header}\n${rows.join("\n")}\n`,
+    `geovista-prospectivity-${timestamp()}.csv`,
+    "text/csv",
+  );
+}
+
+/** Quote a CSV cell that may contain commas, quotes or newlines. */
+function csvCell(value: string): string {
+  return `"${value.replace(/"/g, '""').replace(/\r?\n/g, " ")}"`;
 }
