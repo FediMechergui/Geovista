@@ -9,6 +9,7 @@ import { fetchBuildings } from '../src/lib/buildings/osmFetcher';
 import * as THREE from 'three';
 import { generateDetailedBuildings } from '../src/lib/buildings/buildingMesh';
 import { buildVegetation, type VegetationElement } from '../src/lib/vegetation/osmVegetation';
+import { clampBBoxArea, bboxAreaDeg2, MAX_AREA_DEG2 } from '../src/lib/geo/bbox';
 import { generateTreeLayer } from '../src/lib/vegetation/treeMesh';
 import type { BBox } from '../src/types/geo';
 
@@ -214,6 +215,46 @@ async function main(): Promise<void> {
 
   const empty = generateTreeLayer([], bbox);
   check('empty vegetation is harmless', empty.rendered === 0 && empty.group.children.length === 0);
+
+  /* ================================================================ */
+  /*  Request guards                                                   */
+  /* ================================================================ */
+
+  // A region drawn by hand has no upper bound. Overpass times out rather than
+  // returning anything, so every layer clamps before it asks.
+  const huge: BBox = { west: 9.5, east: 10.5, south: 36.3, north: 37.3 };
+  const small: BBox = { west: 10.15, east: 10.22, south: 36.77, north: 36.83 };
+
+  for (const [name, cap] of Object.entries(MAX_AREA_DEG2)) {
+    const big = clampBBoxArea(huge, cap);
+    check(`${name}: huge selection is clamped`, big.clamped);
+    check(`${name}: clamped area is within the cap`,
+      bboxAreaDeg2(big.bbox) <= cap * 1.000001,
+      `${bboxAreaDeg2(big.bbox)} > ${cap}`);
+
+    const fits = clampBBoxArea(small, cap);
+    check(`${name}: a normal selection is left alone`,
+      !fits.clamped && fits.bbox === small);
+  }
+
+  // The clamp must keep the centre, so the camera still looks at the data.
+  const clampedHuge = clampBBoxArea(huge, MAX_AREA_DEG2.buildings).bbox;
+  const cx = (huge.west + huge.east) / 2;
+  const cy = (huge.south + huge.north) / 2;
+  check('clamp keeps the selection centre',
+    Math.abs((clampedHuge.west + clampedHuge.east) / 2 - cx) < 1e-9 &&
+      Math.abs((clampedHuge.south + clampedHuge.north) / 2 - cy) < 1e-9);
+  check('clamp keeps the aspect ratio',
+    Math.abs(
+      (clampedHuge.east - clampedHuge.west) / (clampedHuge.north - clampedHuge.south) -
+        (huge.east - huge.west) / (huge.north - huge.south),
+    ) < 1e-9);
+
+  // Degenerate boxes must not produce NaN corners.
+  const degenerate = clampBBoxArea({ west: 1, east: 1, south: 2, north: 2 }, 0.01);
+  check('a zero-area selection survives the clamp',
+    !degenerate.clamped &&
+      Object.values(degenerate.bbox).every((v) => Number.isFinite(v)));
 
   console.log(failures === 0 ? '\nAll scene checks passed.\n' : `\n${failures} check(s) failed.\n`);
   process.exit(failures === 0 ? 0 : 1);

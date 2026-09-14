@@ -13,6 +13,7 @@
  */
 
 import type { BBox } from '@/types/geo';
+import { clampBBoxArea } from '@/lib/geo/bbox';
 import type { NodeControl, RoadClass } from '@/types/traffic';
 
 /* ================================================================== */
@@ -122,20 +123,7 @@ export const MAX_ROAD_AREA_DEG2 = 0.06;
  * Returns the original box when it already fits.
  */
 export function clampRoadBBox(bbox: BBox, maxArea = MAX_ROAD_AREA_DEG2): BBox {
-  const w = bbox.east - bbox.west;
-  const h = bbox.north - bbox.south;
-  const area = w * h;
-  if (area <= maxArea || area <= 0) return bbox;
-
-  const k = Math.sqrt(maxArea / area);
-  const cx = (bbox.west + bbox.east) / 2;
-  const cy = (bbox.south + bbox.north) / 2;
-  return {
-    west: cx - (w * k) / 2,
-    east: cx + (w * k) / 2,
-    south: cy - (h * k) / 2,
-    north: cy + (h * k) / 2,
-  };
+  return clampBBoxArea(bbox, maxArea).bbox;
 }
 
 const CONTROL_TAGS: Array<[string, NodeControl]> = [

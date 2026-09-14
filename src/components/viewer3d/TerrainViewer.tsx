@@ -39,6 +39,7 @@ import { summariseMaterials, clearFacadeTextureCache } from '@/lib/buildings/mat
 import { fetchBuildings } from '@/lib/buildings/osmFetcher';
 import { fetchVegetation } from '@/lib/vegetation/osmVegetation';
 import { generateTreeLayer } from '@/lib/vegetation/treeMesh';
+import { clampBBoxArea, bboxAreaKm2 as clampedAreaKm2, MAX_AREA_DEG2 } from '@/lib/geo/bbox';
 import { fetchGeologicalColumn, columnToLayers } from '@/lib/geology/macrostratApi';
 import { analyseProspectivity } from '@/lib/geology/prospectivity';
 import { geodesicDistance } from '@/lib/analysis/coordTransform';
@@ -420,6 +421,7 @@ export default function TerrainViewer() {
   const [loadingRoads, setLoadingRoads] = useState(false);
   const [loadingTrees, setLoadingTrees] = useState(false);
   const [demProgress, setDemProgress] = useState<{ loaded: number; total: number } | null>(null);
+  const [clampNote, setClampNote] = useState<string | null>(null);
   const [imageryProgress, setImageryProgress] = useState<{ loaded: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -559,7 +561,16 @@ export default function TerrainViewer() {
     setLoadingBuildings(true);
 
     const gridArea = (grid.bbox.east - grid.bbox.west) * (grid.bbox.north - grid.bbox.south);
-    const bbox = gridArea <= MAX_BUILDING_AREA_DEG2 ? grid.bbox : selectedRegion;
+    // The grid is tile-aligned and slightly larger than the selection, so the
+    // smaller of the two is the honest extent; either can still be unbounded
+    // when the region was drawn by hand, so clamp before asking Overpass.
+    const { bbox, clamped } = clampBBoxArea(
+      gridArea <= MAX_BUILDING_AREA_DEG2 ? grid.bbox : selectedRegion,
+      MAX_AREA_DEG2.buildings,
+    );
+    setClampNote(
+      clamped ? `Large selection — layers cover the central ${clampedAreaKm2(bbox).toFixed(0)} km²` : null,
+    );
 
     fetchBuildings(bbox, ac.signal)
       .then((data) => {
@@ -569,6 +580,7 @@ export default function TerrainViewer() {
         if (ac.signal.aborted) return;
         console.warn('[TerrainViewer] building fetch failed:', err);
         setBuildings([]);
+        setError(err instanceof Error ? `Buildings: ${err.message}` : 'Buildings failed to load');
       })
       .finally(() => {
         if (!ac.signal.aborted) setLoadingBuildings(false);
@@ -589,7 +601,9 @@ export default function TerrainViewer() {
     const ac = new AbortController();
     setLoadingTrees(true);
 
-    fetchVegetation(grid.bbox, ac.signal)
+    const { bbox } = clampBBoxArea(grid.bbox, MAX_AREA_DEG2.vegetation);
+
+    fetchVegetation(bbox, ac.signal)
       .then((data) => {
         if (!ac.signal.aborted) setVegetation(data);
       })
@@ -1174,6 +1188,13 @@ export default function TerrainViewer() {
               {kmh(route.distance / Math.max(1, route.liveDuration))}
             </>
           )}
+        </div>
+      )}
+
+      {/* ---------- Clamped selection ---------- */}
+      {clampNote && !error && loadingItems.length === 0 && (
+        <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-full bg-amber-600/90 px-4 py-1.5 text-xs font-medium text-white shadow-lg">
+          {clampNote}
         </div>
       )}
 
