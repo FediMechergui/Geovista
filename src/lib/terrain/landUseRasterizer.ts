@@ -11,6 +11,7 @@
  */
 
 import type { BBox } from '@/types/geo';
+import { overpassQuery, QUERY_TIMEOUT_S } from '@/lib/osm/overpass';
 
 /* ================================================================== */
 /*  Color palette — realistic biome / land-use colors                  */
@@ -116,7 +117,7 @@ export async function fetchLandUse(bbox: BBox): Promise<OverpassResponse> {
 
   // Query for polygons (areas) and linestrings (roads, waterways)
   const query = `
-    [out:json][timeout:45];
+    [out:json][timeout:${QUERY_TIMEOUT_S}];
     (
       way["landuse"](${b});
       relation["landuse"](${b});
@@ -129,17 +130,7 @@ export async function fetchLandUse(bbox: BBox): Promise<OverpassResponse> {
     out geom;
   `;
 
-  const response = await fetch('/api/proxy/overpass', {
-    method: 'POST',
-    body: `data=${encodeURIComponent(query)}`,
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Overpass API error: ${response.status}`);
-  }
-
-  return (await response.json()) as OverpassResponse;
+  return { elements: await overpassQuery<OverpassElement>(query) };
 }
 
 /* ================================================================== */

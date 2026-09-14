@@ -14,6 +14,7 @@
 
 import type { BBox } from '@/types/geo';
 import { clampBBoxArea } from '@/lib/geo/bbox';
+import { overpassQuery, QUERY_TIMEOUT_S } from '@/lib/osm/overpass';
 import type { NodeControl, RoadClass } from '@/types/traffic';
 
 /* ================================================================== */
@@ -158,7 +159,7 @@ export async function fetchRoadNetwork(
   // `.roads` is reused three times: geometry, node ids, and the control nodes
   // that lie on those ways.
   const query = `
-    [out:json][timeout:60];
+    [out:json][timeout:${QUERY_TIMEOUT_S}];
     way["highway"~"^(${DRIVABLE_RE})$"](${b})->.roads;
     (
       .roads;
@@ -168,25 +169,14 @@ export async function fetchRoadNetwork(
     .roads out body;
   `;
 
-  const response = await fetch('/api/proxy/overpass', {
-    method: 'POST',
-    body: `data=${encodeURIComponent(query)}`,
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    signal,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Overpass road query failed: ${response.status} ${response.statusText}`);
-  }
-
-  const data = (await response.json()) as { elements: OverpassElement[] };
+  const elements = await overpassQuery<OverpassElement>(query, signal);
 
   const geomByWay = new Map<number, Array<[number, number]>>();
   const nodesByWay = new Map<number, number[]>();
   const tagsByWay = new Map<number, Record<string, string>>();
   const controls = new Map<number, NodeControl>();
 
-  for (const el of data.elements) {
+  for (const el of elements) {
     if (el.type === 'node') {
       const control = controlOf(el.tags);
       if (control !== 'none') controls.set(el.id, control);

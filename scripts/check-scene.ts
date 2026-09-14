@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import { generateDetailedBuildings } from '../src/lib/buildings/buildingMesh';
 import { buildVegetation, type VegetationElement } from '../src/lib/vegetation/osmVegetation';
 import { clampBBoxArea, bboxAreaDeg2, MAX_AREA_DEG2 } from '../src/lib/geo/bbox';
+import { overpassQuery } from '../src/lib/osm/overpass';
 import { generateTreeLayer } from '../src/lib/vegetation/treeMesh';
 import type { BBox } from '../src/types/geo';
 
@@ -223,7 +224,9 @@ async function main(): Promise<void> {
   // A region drawn by hand has no upper bound. Overpass times out rather than
   // returning anything, so every layer clamps before it asks.
   const huge: BBox = { west: 9.5, east: 10.5, south: 36.3, north: 37.3 };
-  const small: BBox = { west: 10.15, east: 10.22, south: 36.77, north: 36.83 };
+  // The extent a place search actually produces (this is Tunis), which must
+  // pass through every cap untouched — clamping a normal twin would be a bug.
+  const small: BBox = { west: 10.1546, east: 10.217, south: 36.7752, north: 36.8252 };
 
   for (const [name, cap] of Object.entries(MAX_AREA_DEG2)) {
     const big = clampBBoxArea(huge, cap);
@@ -255,6 +258,84 @@ async function main(): Promise<void> {
   check('a zero-area selection survives the clamp',
     !degenerate.clamped &&
       Object.values(degenerate.bbox).every((v) => Number.isFinite(v)));
+
+  /* ================================================================ */
+  /*  Overpass responses that are not what they look like              */
+  /* ================================================================ */
+
+  // A timeout is answered with 200 OK plus a remark and whatever was collected
+  // so far, so a naive read turns a dead query into "this city has 2 buildings".
+  const reply = (body: unknown, status = 200) =>
+    (globalThis.fetch = (async () =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { 'Content-Type': 'application/json' },
+      })) as typeof fetch);
+
+  async function expectThrow(label: string, body: unknown, status = 200): Promise<string> {
+    reply(body, status);
+    try {
+      await overpassQuery('[out:json];out;');
+      check(label, false, 'resolved instead of throwing');
+      return '';
+    } catch (err) {
+      check(label, true);
+      return err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  const timedOut = await expectThrow('a timed-out query throws', {
+    remark: 'runtime error: Query timed out in "query" at line 3 after 55 seconds.',
+    elements: [{ type: 'way', id: 1 }],
+  });
+  check('the timeout message says what to do', /smaller region/i.test(timedOut), timedOut);
+
+  await expectThrow('an out-of-memory remark throws', {
+    remark: 'runtime error: Query run out of memory in "recurse" at line 5.',
+    elements: [],
+  });
+  await expectThrow('a proxy 502 throws', { error: 'All Overpass mirrors failed' }, 502);
+
+  // The crash seen in production: Overpass answered 200 with no `elements` key
+  // at all, and `for (const el of data.elements)` threw
+  // "undefined is not iterable".
+  reply({ version: 0.6, generator: 'Overpass API' });
+  const noElements = await overpassQuery('[out:json];out;');
+  check('a body with no elements yields an empty list, not a crash',
+    Array.isArray(noElements) && noElements.length === 0);
+
+  // A remark that is only advisory must not fail an otherwise good answer.
+  reply({ remark: 'considered 3 alternatives', elements: [{ type: 'way', id: 7 }] });
+  const advisory = await overpassQuery<{ id: number }>('[out:json];out;');
+  check('an advisory remark is not treated as failure', advisory.length === 1);
+
+  // Overpass allows ~2 slots per IP; three concurrent heavy queries starve one.
+  let inFlight = 0;
+  let peak = 0;
+  globalThis.fetch = (async () => {
+    inFlight++;
+    peak = Math.max(peak, inFlight);
+    await new Promise((r) => setTimeout(r, 5));
+    inFlight--;
+    return new Response(JSON.stringify({ elements: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  await Promise.all([
+    overpassQuery('[out:json];out;'),
+    overpassQuery('[out:json];out;'),
+    overpassQuery('[out:json];out;'),
+  ]);
+  check('queries are issued one at a time', peak === 1, `${peak} concurrent`);
+
+  // One failure must not wedge the queue for everything after it.
+  reply({ error: 'boom' }, 502);
+  await overpassQuery('[out:json];out;').catch(() => undefined);
+  reply({ elements: [{ type: 'way', id: 1 }] });
+  const afterFailure = await overpassQuery('[out:json];out;');
+  check('a failed query does not stall the queue', afterFailure.length === 1);
 
   console.log(failures === 0 ? '\nAll scene checks passed.\n' : `\n${failures} check(s) failed.\n`);
   process.exit(failures === 0 ? 0 : 1);
