@@ -66,6 +66,7 @@ import {
   type CesiumBuildingLayer,
 } from '@/lib/buildings/cesiumBuildings';
 import { fetchVegetation } from '@/lib/vegetation/osmVegetation';
+import { clampBBoxArea, bboxAreaKm2, MAX_AREA_DEG2 } from '@/lib/geo/bbox';
 import {
   createCesiumTreeLayer,
   type CesiumTreeLayer,
@@ -227,6 +228,8 @@ export default function CesiumViewer() {
   const [buildingCount, setBuildingCount] = useState(0);
   const [treeCount, setTreeCount] = useState(0);
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [buildingsNote, setBuildingsNote] = useState<string | null>(null);
+  const [treesNote, setTreesNote] = useState<string | null>(null);
   const [measureMode, setMeasureMode] = useState(false);
   const [measurePoints, setMeasurePoints] = useState<MeasurePoint[]>([]);
   const [featureInfo, setFeatureInfo] = useState<FeatureInfo | null>(null);
@@ -424,8 +427,14 @@ export default function CesiumViewer() {
 
     const ac = new AbortController();
     setBuildingsStatus('loading');
+    setBuildingsNote(null);
 
-    fetchBuildings(selectedRegion, ac.signal)
+    // A hand-drawn region has no upper bound, and `out geom` over a whole
+    // governorate times out rather than returning anything. Ask for the centre
+    // of the selection and say that is what happened.
+    const { bbox, clamped } = clampBBoxArea(selectedRegion, MAX_AREA_DEG2.buildings);
+
+    fetchBuildings(bbox, ac.signal)
       .then((data) => createCesiumBuildingLayer(viewer, data, ac.signal))
       .then((layer) => {
         if (ac.signal.aborted || viewer.isDestroyed()) {
@@ -435,11 +444,19 @@ export default function CesiumViewer() {
         osmFallbackRef.current = layer;
         setBuildingCount(layer?.count ?? 0);
         setBuildingsStatus(layer ? 'ready' : 'idle');
+        setBuildingsNote(
+          clamped
+            ? `selection too large — loaded the central ${bboxAreaKm2(bbox).toFixed(0)} km²`
+            : layer
+              ? null
+              : 'no buildings mapped here',
+        );
       })
       .catch((err) => {
         if (ac.signal.aborted) return;
         console.warn('[CesiumViewer] OSM building fallback failed:', err);
         setBuildingsStatus('failed');
+        setBuildingsNote(err instanceof Error ? err.message : 'Overpass request failed');
       });
 
     return () => {
@@ -469,19 +486,30 @@ export default function CesiumViewer() {
 
     const ac = new AbortController();
     setTreesStatus('loading');
+    setTreesNote(null);
 
-    fetchVegetation(selectedRegion, ac.signal)
+    const { bbox, clamped } = clampBBoxArea(selectedRegion, MAX_AREA_DEG2.vegetation);
+
+    fetchVegetation(bbox, ac.signal)
       .then((data) => {
         if (ac.signal.aborted || viewer.isDestroyed()) return;
         const layer = createCesiumTreeLayer(viewer, data.trees);
         treeLayerRef.current = layer;
         setTreeCount(layer?.count ?? 0);
         setTreesStatus(layer ? 'ready' : 'idle');
+        setTreesNote(
+          clamped
+            ? `selection too large — loaded the central ${bboxAreaKm2(bbox).toFixed(0)} km²`
+            : layer
+              ? null
+              : 'no vegetation mapped here',
+        );
       })
       .catch((err) => {
         if (ac.signal.aborted) return;
         console.warn('[CesiumViewer] vegetation failed:', err);
         setTreesStatus('failed');
+        setTreesNote(err instanceof Error ? err.message : 'Overpass request failed');
       });
 
     return () => {
@@ -971,6 +999,7 @@ export default function CesiumViewer() {
                         ? `OSM footprints — ${buildingCount.toLocaleString()} in this region`
                         : 'select a region to load them'
                 }
+                note={buildingsNote}
                 upgrade={
                   !HAS_ION
                     ? 'NEXT_PUBLIC_CESIUM_ION_TOKEN swaps in the global pre-tiled set'
@@ -990,6 +1019,7 @@ export default function CesiumViewer() {
                         ? `OSM vegetation — ${treeCount.toLocaleString()} placed`
                         : 'select a region to load them'
                 }
+                note={treesNote}
               />
               <SourceRow
                 Icon={Box}
@@ -1145,12 +1175,15 @@ function SourceRow({
   label,
   status,
   detail,
+  note,
   upgrade,
 }: {
   Icon: typeof Globe2;
   label: string;
   status: Status;
   detail: string;
+  /** Why this source did not give you everything — clamped area, or an error. */
+  note?: string | null;
   upgrade?: string;
 }) {
   const dot =
@@ -1172,6 +1205,11 @@ function SourceRow({
           {detail}
         </span>
       </div>
+      {note && (
+        <p className={`ml-3 mt-0.5 text-[10px] ${status === 'failed' ? 'text-red-400' : 'text-amber-400/80'}`}>
+          {note}
+        </p>
+      )}
       {upgrade && <p className="ml-3 mt-0.5 text-[10px] text-zinc-600">{upgrade}</p>}
     </li>
   );
