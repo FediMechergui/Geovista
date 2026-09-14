@@ -67,7 +67,7 @@ import {
   type CesiumBuildingLayer,
 } from '@/lib/buildings/cesiumBuildings';
 import { fetchVegetation } from '@/lib/vegetation/osmVegetation';
-import { clampBBoxArea, bboxAreaKm2, MAX_AREA_DEG2 } from '@/lib/geo/bbox';
+import { clampBBoxArea, bboxAreaKm2, MAX_AREA_KM2 } from '@/lib/geo/bbox';
 import {
   createCesiumTreeLayer,
   type CesiumTreeLayer,
@@ -433,7 +433,7 @@ export default function CesiumViewer() {
     // A hand-drawn region has no upper bound, and `out geom` over a whole
     // governorate times out rather than returning anything. Ask for the centre
     // of the selection and say that is what happened.
-    const { bbox, clamped } = clampBBoxArea(selectedRegion, MAX_AREA_DEG2.buildings);
+    const { bbox, clamped } = clampBBoxArea(selectedRegion, MAX_AREA_KM2.buildings);
 
     fetchBuildings(bbox, ac.signal)
       .then((data) => createCesiumBuildingLayer(viewer, data, ac.signal))
@@ -489,7 +489,7 @@ export default function CesiumViewer() {
     setTreesStatus('loading');
     setTreesNote(null);
 
-    const { bbox, clamped } = clampBBoxArea(selectedRegion, MAX_AREA_DEG2.vegetation);
+    const { bbox, clamped } = clampBBoxArea(selectedRegion, MAX_AREA_KM2.vegetation);
 
     fetchVegetation(bbox, ac.signal)
       .then((data) => {

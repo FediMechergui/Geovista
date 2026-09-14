@@ -9,7 +9,7 @@ import { fetchBuildings } from '../src/lib/buildings/osmFetcher';
 import * as THREE from 'three';
 import { generateDetailedBuildings } from '../src/lib/buildings/buildingMesh';
 import { buildVegetation, type VegetationElement } from '../src/lib/vegetation/osmVegetation';
-import { clampBBoxArea, bboxAreaDeg2, MAX_AREA_DEG2 } from '../src/lib/geo/bbox';
+import { clampBBoxArea, bboxAreaKm2, MAX_AREA_KM2 } from '../src/lib/geo/bbox';
 import { overpassQuery } from '../src/lib/osm/overpass';
 import { generateTreeLayer } from '../src/lib/vegetation/treeMesh';
 import type { BBox } from '../src/types/geo';
@@ -83,6 +83,14 @@ elements.push(rect(id++, bbox.west + dLon(400), bbox.south + dLat(20), 1, 1, { b
 
 globalThis.fetch = (async () =>
   new Response(JSON.stringify({ elements }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch;
+
+/** Point `fetch` at a canned Overpass response. */
+const reply = (body: unknown, status = 200) =>
+  (globalThis.fetch = (async () =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch);
 
 let failures = 0;
 /** `detail` describes what went wrong, so it is only printed on a failure. */
@@ -228,20 +236,28 @@ async function main(): Promise<void> {
   // pass through every cap untouched — clamping a normal twin would be a bug.
   const small: BBox = { west: 10.1546, east: 10.217, south: 36.7752, north: 36.8252 };
 
-  for (const [name, cap] of Object.entries(MAX_AREA_DEG2)) {
+  for (const [name, cap] of Object.entries(MAX_AREA_KM2)) {
     const big = clampBBoxArea(huge, cap);
     check(`${name}: huge selection is clamped`, big.clamped);
     check(`${name}: clamped area is within the cap`,
-      bboxAreaDeg2(big.bbox) <= cap * 1.000001,
-      `${bboxAreaDeg2(big.bbox)} > ${cap}`);
+      bboxAreaKm2(big.bbox) <= cap * 1.0001,
+      `${bboxAreaKm2(big.bbox).toFixed(1)} km² > ${cap} km²`);
 
+    // Buildings are the tight one on purpose: a whole city twin of footprints
+    // is more than Overpass will return, so a searched place is clamped there
+    // and told. The cheaper layers must cover the twin whole.
     const fits = clampBBoxArea(small, cap);
-    check(`${name}: a normal selection is left alone`,
-      !fits.clamped && fits.bbox === small);
+    if (name === 'buildings') {
+      check(`${name}: a city-sized twin is clamped`, fits.clamped,
+        `${bboxAreaKm2(small).toFixed(0)} km² vs ${cap} km² cap`);
+    } else {
+      check(`${name}: a normal selection is left alone`,
+        !fits.clamped && fits.bbox === small);
+    }
   }
 
   // The clamp must keep the centre, so the camera still looks at the data.
-  const clampedHuge = clampBBoxArea(huge, MAX_AREA_DEG2.buildings).bbox;
+  const clampedHuge = clampBBoxArea(huge, MAX_AREA_KM2.buildings).bbox;
   const cx = (huge.west + huge.east) / 2;
   const cy = (huge.south + huge.north) / 2;
   check('clamp keeps the selection centre',
@@ -259,19 +275,39 @@ async function main(): Promise<void> {
     !degenerate.clamped &&
       Object.values(degenerate.bbox).every((v) => Number.isFinite(v)));
 
+  /* ---- Orphan building parts ---- */
+
+  // `building:part` ways whose parent outline lies outside the queried bbox
+  // have no host. Appending them to `outlines` mid-loop used to desynchronise
+  // the parallel bounds array, and the *second* orphan read past its end:
+  // "undefined is not iterable". Manhattan has plenty of both.
+  const orphanEls = [
+    rect(70001, bbox.west + dLon(600), bbox.south + dLat(600), 30, 30, { 'building:part': 'yes', height: '40' }),
+    rect(70002, bbox.west + dLon(700), bbox.south + dLat(600), 30, 30, { 'building:part': 'yes', height: '55' }),
+    rect(70003, bbox.west + dLon(800), bbox.south + dLat(600), 30, 30, { 'building:part': 'yes', height: '70' }),
+    rect(70004, bbox.west + dLon(900), bbox.south + dLat(600), 40, 40, { building: 'yes' }),
+  ];
+  reply({ elements: orphanEls });
+
+  let orphanResult: Awaited<ReturnType<typeof fetchBuildings>> | null = null;
+  let orphanError = '';
+  try {
+    orphanResult = await fetchBuildings(bbox);
+  } catch (err) {
+    orphanError = err instanceof Error ? err.message : String(err);
+  }
+  check('several orphan parts do not crash the parser', orphanError === '', orphanError);
+  check('every orphan part is still rendered standalone',
+    orphanResult?.length === 4, `${orphanResult?.length} outlines`);
+  check('an orphan is never adopted as another part\'s host',
+    (orphanResult ?? []).every((b) => !b.parts?.length));
+
   /* ================================================================ */
   /*  Overpass responses that are not what they look like              */
   /* ================================================================ */
 
   // A timeout is answered with 200 OK plus a remark and whatever was collected
   // so far, so a naive read turns a dead query into "this city has 2 buildings".
-  const reply = (body: unknown, status = 200) =>
-    (globalThis.fetch = (async () =>
-      new Response(JSON.stringify(body), {
-        status,
-        headers: { 'Content-Type': 'application/json' },
-      })) as typeof fetch);
-
   async function expectThrow(label: string, body: unknown, status = 200): Promise<string> {
     reply(body, status);
     try {

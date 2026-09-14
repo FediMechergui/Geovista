@@ -39,7 +39,7 @@ import { summariseMaterials, clearFacadeTextureCache } from '@/lib/buildings/mat
 import { fetchBuildings } from '@/lib/buildings/osmFetcher';
 import { fetchVegetation } from '@/lib/vegetation/osmVegetation';
 import { generateTreeLayer } from '@/lib/vegetation/treeMesh';
-import { clampBBoxArea, bboxAreaKm2 as clampedAreaKm2, MAX_AREA_DEG2 } from '@/lib/geo/bbox';
+import { clampBBoxArea, bboxAreaKm2 as clampedAreaKm2, MAX_AREA_KM2 } from '@/lib/geo/bbox';
 import { fetchGeologicalColumn, columnToLayers } from '@/lib/geology/macrostratApi';
 import { analyseProspectivity } from '@/lib/geology/prospectivity';
 import { geodesicDistance } from '@/lib/analysis/coordTransform';
@@ -566,7 +566,7 @@ export default function TerrainViewer() {
     // when the region was drawn by hand, so clamp before asking Overpass.
     const { bbox, clamped } = clampBBoxArea(
       gridArea <= MAX_BUILDING_AREA_DEG2 ? grid.bbox : selectedRegion,
-      MAX_AREA_DEG2.buildings,
+      MAX_AREA_KM2.buildings,
     );
     setClampNote(
       clamped ? `Large selection — layers cover the central ${clampedAreaKm2(bbox).toFixed(0)} km²` : null,
@@ -601,7 +601,7 @@ export default function TerrainViewer() {
     const ac = new AbortController();
     setLoadingTrees(true);
 
-    const { bbox } = clampBBoxArea(grid.bbox, MAX_AREA_DEG2.vegetation);
+    const { bbox } = clampBBoxArea(grid.bbox, MAX_AREA_KM2.vegetation);
 
     fetchVegetation(bbox, ac.signal)
       .then((data) => {
