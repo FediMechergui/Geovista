@@ -44,7 +44,8 @@ import {
   Entity,
   ClassificationType,
   defined,
-} from 'cesium';
+  type Cesium,
+} from '@/lib/cesium';
 
 import { useMapStore } from '@/store/mapStore';
 import { geodesicDistance } from '@/lib/analysis/coordTransform';
@@ -703,7 +704,7 @@ export default function CesiumViewer() {
 
     const handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
 
-    handler.setInputAction((e: ScreenSpaceEventHandler.PositionedEvent) => {
+    handler.setInputAction((e: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
       const v = viewerRef.current;
       if (!v) return;
       const position = pickWorldPosition(v, e.position);
@@ -759,7 +760,7 @@ export default function CesiumViewer() {
       }
     }, ScreenSpaceEventType.LEFT_CLICK);
 
-    handler.setInputAction((e: ScreenSpaceEventHandler.MotionEvent) => {
+    handler.setInputAction((e: Cesium.ScreenSpaceEventHandler.MotionEvent) => {
       const now = performance.now();
       if (now - lastMoveRef.current < 60) return;
       lastMoveRef.current = now;

@@ -19,7 +19,7 @@ import {
   Credit,
   CustomHeightmapTerrainProvider,
   WebMercatorTilingScheme,
-} from 'cesium';
+} from '@/lib/cesium';
 import { decodeTerrarium, loadTerrainTile } from '@/lib/terrain/demLoader';
 
 /** Highest zoom AWS Terrain Tiles publishes. */
