@@ -17,6 +17,9 @@ const CESIUM_BUILD_DIR = path.join(process.cwd(), 'node_modules', 'cesium', 'Bui
 
 const ALLOWED_ROOTS = new Set(['Workers', 'Assets', 'ThirdParty', 'Widgets']);
 
+/** The library itself, loaded with a script tag (see src/lib/cesium/index.ts). */
+const ALLOWED_FILES = new Set(['Cesium.js']);
+
 const MIME: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
@@ -44,7 +47,11 @@ export async function GET(
 ) {
   const { path: segments } = await context.params;
 
-  if (!segments?.length || !ALLOWED_ROOTS.has(segments[0])) {
+  const allowed =
+    segments?.length === 1
+      ? ALLOWED_FILES.has(segments[0])
+      : !!segments?.length && ALLOWED_ROOTS.has(segments[0]);
+  if (!allowed) {
     return new NextResponse('Not found', { status: 404 });
   }
 

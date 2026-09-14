@@ -35,7 +35,7 @@ import {
   PolylineColorAppearance,
   Math as CesiumMath,
   type Viewer,
-} from 'cesium';
+} from '@/lib/cesium';
 
 import type { EdgeStats, RoadGraph, VehiclePose } from '@/types/traffic';
 import { LANE_WIDTH_M, localToGeo, frameFor } from '@/lib/traffic/roadGraph';

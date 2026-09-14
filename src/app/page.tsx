@@ -31,10 +31,17 @@ const TerrainViewer = dynamic(() => import("@/components/viewer3d/TerrainViewer"
   loading: () => <Placeholder label="Loading terrain viewer…" />,
 });
 
-const CesiumViewer = dynamic(() => import("@/components/viewer3d/CesiumViewer"), {
-  ssr: false,
-  loading: () => <Placeholder label="Loading globe…" />,
-});
+// CesiumJS is served from `public/cesium` rather than bundled (see
+// `@/lib/cesium`), so it must be on the page before the viewer module — which
+// reads `window.Cesium` at evaluation time — is imported.
+const CesiumViewer = dynamic(
+  async () => {
+    const { loadCesium } = await import("@/lib/cesium/load");
+    await loadCesium();
+    return import("@/components/viewer3d/CesiumViewer");
+  },
+  { ssr: false, loading: () => <Placeholder label="Loading globe…" /> },
+);
 
 /* ================================================================== */
 /*  Home page                                                          */

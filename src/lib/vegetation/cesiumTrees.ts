@@ -21,7 +21,7 @@ import {
   NearFarScalar,
   VerticalOrigin,
   type Viewer,
-} from 'cesium';
+} from '@/lib/cesium';
 
 import type { TreeInstance, TreeKind } from '@/types/vegetation';
 

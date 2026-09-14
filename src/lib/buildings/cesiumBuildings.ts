@@ -34,7 +34,7 @@ import {
   sampleTerrainMostDetailed,
   type TerrainProvider,
   type Viewer,
-} from 'cesium';
+} from '@/lib/cesium';
 
 import type { BuildingData } from '@/types/buildings';
 import { estimateBuildingHeight } from '@/lib/buildings/buildingMesh';
