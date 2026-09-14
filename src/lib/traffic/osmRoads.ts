@@ -13,7 +13,7 @@
  */
 
 import type { BBox } from '@/types/geo';
-import { clampBBoxArea } from '@/lib/geo/bbox';
+import { clampBBoxArea, MAX_AREA_KM2 } from '@/lib/geo/bbox';
 import { overpassQuery, QUERY_TIMEOUT_S } from '@/lib/osm/overpass';
 import type { NodeControl, RoadClass } from '@/types/traffic';
 
@@ -114,17 +114,12 @@ export function isLink(tags: Record<string, string>): boolean {
 /* ================================================================== */
 
 /**
- * Soft guard: above this bbox area the road query is likely to time out on
- * Overpass. The caller clamps its request instead of failing.
+ * Shrink a bbox around its centre so the road query stays inside the ground
+ * area Overpass can serve (see `MAX_AREA_KM2`). Returns the original box when
+ * it already fits.
  */
-export const MAX_ROAD_AREA_DEG2 = 0.06;
-
-/**
- * Shrink a bbox around its centre so its area is at most `maxArea` deg².
- * Returns the original box when it already fits.
- */
-export function clampRoadBBox(bbox: BBox, maxArea = MAX_ROAD_AREA_DEG2): BBox {
-  return clampBBoxArea(bbox, maxArea).bbox;
+export function clampRoadBBox(bbox: BBox, maxAreaKm2 = MAX_AREA_KM2.roads): BBox {
+  return clampBBoxArea(bbox, maxAreaKm2).bbox;
 }
 
 const CONTROL_TAGS: Array<[string, NodeControl]> = [

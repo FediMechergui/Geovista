@@ -244,12 +244,18 @@ export async function fetchBuildings(
   if (parts.length > 0 && outlines.length > 0) {
     const outlineBounds = outlines.map((o) => bounds(o.geometry));
 
+    // Orphans are collected rather than appended as we go: `outlineBounds` is
+    // indexed in lockstep with `outlines`, so growing `outlines` mid-loop makes
+    // the next part read past the end of it. A part is also never a sensible
+    // host for another part.
+    const orphans: BuildingData[] = [];
+
     for (const part of parts) {
       const c = centroid(part.geometry);
       let host: BuildingData | null = null;
       let hostArea = Infinity;
 
-      for (let i = 0; i < outlines.length; i++) {
+      for (let i = 0; i < outlineBounds.length; i++) {
         const [minX, minY, maxX, maxY] = outlineBounds[i];
         if (c[0] < minX || c[0] > maxX || c[1] < minY || c[1] > maxY) continue;
         if (!contains(outlines[i].geometry, c)) continue;
@@ -261,13 +267,13 @@ export async function fetchBuildings(
         }
       }
 
-      if (host) {
-        (host.parts ??= []).push(part);
-      } else {
-        // An orphan part is still a real volume — render it standalone.
-        outlines.push(part);
-      }
+      // An orphan part is still a real volume — render it standalone. That
+      // happens whenever the parent outline falls outside the queried bbox.
+      if (host) (host.parts ??= []).push(part);
+      else orphans.push(part);
     }
+
+    outlines.push(...orphans);
   }
 
   return outlines;
