@@ -20,6 +20,7 @@
 
 import type { BuildingData, BuildingProperties } from '@/types/buildings';
 import type { BBox } from '@/types/geo';
+import { overpassQuery, QUERY_TIMEOUT_S } from '@/lib/osm/overpass';
 
 interface OverpassMember {
   type: string;
@@ -34,10 +35,6 @@ interface OverpassElement {
   tags?: Record<string, string>;
   geometry?: Array<{ lat: number; lon: number }>;
   members?: OverpassMember[];
-}
-
-interface OverpassResponse {
-  elements: OverpassElement[];
 }
 
 /**
@@ -194,33 +191,22 @@ export async function fetchBuildings(
   }
 
   const b = `${south},${west},${north},${east}`;
+  // `nwr` is one index lookup for ways and relations instead of two.
   const query = `
-    [out:json][timeout:45];
+    [out:json][timeout:${QUERY_TIMEOUT_S}];
     (
-      way["building"](${b});
-      relation["building"](${b});
+      nwr["building"](${b});
       way["building:part"](${b});
     );
     out geom;
   `;
 
-  const response = await fetch('/api/proxy/overpass', {
-    method: 'POST',
-    body: `data=${encodeURIComponent(query)}`,
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    signal,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Overpass API error: ${response.status} ${response.statusText}`);
-  }
-
-  const data = (await response.json()) as OverpassResponse;
+  const elements = await overpassQuery<OverpassElement>(query, signal);
 
   const outlines: BuildingData[] = [];
   const parts: BuildingData[] = [];
 
-  for (const el of data.elements) {
+  for (const el of elements) {
     const tags = el.tags;
     if (!tags) continue;
 

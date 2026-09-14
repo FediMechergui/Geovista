@@ -59,12 +59,16 @@ export function clampBBoxArea(bbox: BBox, maxArea: number): ClampedBBox {
 }
 
 /**
- * Caps per layer, in square degrees. Roads are the most generous because the
- * road query returns far fewer vertices per km² than buildings do.
+ * Caps per layer, in square degrees, sized by how much each query returns per
+ * km² rather than by what looks generous. `out geom` sends every vertex, and a
+ * dense city centre is the worst case: ~4 km² of Manhattan buildings is already
+ * megabytes, and 20 km² does not finish inside any timeout Overpass allows.
+ * Vegetation is cheaper per km² — outlines and points rather than footprints —
+ * and roads cheaper still.
  */
 export const MAX_AREA_DEG2 = {
-  /** `way["building"]` + relations + parts, with `out geom`. */
-  buildings: 0.02,
-  /** Trees, tree rows and wooded outlines. */
-  vegetation: 0.02,
+  /** `nwr["building"]` + parts, with `out geom`. ~4 km² at mid latitudes. */
+  buildings: 0.004,
+  /** Trees, tree rows and wooded outlines. ~10 km². */
+  vegetation: 0.01,
 } as const;

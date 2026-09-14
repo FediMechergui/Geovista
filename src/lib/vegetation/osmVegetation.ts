@@ -22,6 +22,7 @@ import type {
 } from '@/types/vegetation';
 import { EMPTY_VEGETATION } from '@/types/vegetation';
 import { parseLength } from '@/lib/buildings/osmFetcher';
+import { overpassQuery, QUERY_TIMEOUT_S } from '@/lib/osm/overpass';
 
 /** One Overpass element, as far as this module reads it. */
 export interface VegetationElement {
@@ -200,7 +201,7 @@ export async function fetchVegetation(
   const b = `${south},${west},${north},${east}`;
 
   const query = `
-    [out:json][timeout:45];
+    [out:json][timeout:${QUERY_TIMEOUT_S}];
     (
       node["natural"="tree"](${b});
       way["natural"="tree_row"](${b});
@@ -211,19 +212,8 @@ export async function fetchVegetation(
     out geom;
   `;
 
-  const response = await fetch('/api/proxy/overpass', {
-    method: 'POST',
-    body: `data=${encodeURIComponent(query)}`,
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    signal,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Overpass API error: ${response.status} ${response.statusText}`);
-  }
-
-  const data = (await response.json()) as { elements: VegetationElement[] };
-  return buildVegetation(data.elements, bbox);
+  const elements = await overpassQuery<VegetationElement>(query, signal);
+  return buildVegetation(elements, bbox);
 }
 
 /**
